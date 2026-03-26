@@ -1,0 +1,346 @@
+---
+title: "RAG"
+description: "Retrieval-Augmented Generation: index documents, embed them into a vector store, and retrieve relevant context at query time."
+---
+
+**Retrieval-Augmented Generation (RAG)** extends a model's knowledge by finding and injecting relevant documents into the prompt at query time. Instead of relying solely on what was in the model's training data, your application can search a private document corpus—product docs, support tickets, internal wikis—and pass the most relevant excerpts to the model.
+
+The typical RAG pipeline has two phases:
+
+1. **Indexing** — Chunk documents, embed them into vectors, and store them in a vector database.
+2. **Retrieval + Generation** — Embed the user's query, retrieve the most similar documents, and include them in the prompt.
+
+Genkit provides three primitives that map directly onto this pipeline: **indexers**, **embedders**, and **retrievers**.
+
+## The three RAG primitives
+
+### Embedders
+
+An embedder converts text (or other content) into a numeric vector for similarity search.
+
+```ts
+// TypeScript — embed a piece of text
+const embeddings = await ai.embed({
+  embedder: 'googleai/gemini-embedding-001',
+  content: 'How do I reset my password?',
+});
+// embeddings[0].embedding → number[]
+```
+
+### Indexers
+
+An indexer takes documents and stores them in a vector database.
+
+```ts
+// TypeScript — define a custom indexer backed by your vector DB
+const myIndexer = ai.defineIndexer(
+  { name: 'myDocs' },
+  async (docs) => {
+    for (const doc of docs) {
+      const [embedding] = await ai.embed({
+        embedder: 'googleai/gemini-embedding-001',
+        content: doc.text(),
+      });
+      await vectorDB.upsert({
+        id: doc.metadata?.id,
+        vector: embedding.embedding,
+        payload: { text: doc.text(), ...doc.metadata },
+      });
+    }
+  }
+);
+```
+
+### Retrievers
+
+A retriever takes a query and returns the most relevant documents.
+
+```ts
+// TypeScript — define a custom retriever
+const myRetriever = ai.defineRetriever(
+  { name: 'myDocs' },
+  async (query, options) => {
+    const [queryEmbedding] = await ai.embed({
+      embedder: 'googleai/gemini-embedding-001',
+      content: query.text(),
+    });
+    const results = await vectorDB.query({
+      vector: queryEmbedding.embedding,
+      topK: options?.k ?? 5,
+    });
+    return {
+      documents: results.map((r) =>
+        Document.fromText(r.payload.text, r.payload)
+      ),
+    };
+  }
+);
+```
+
+## Indexing documents
+
+Use `ai.index()` to store documents via any registered indexer:
+
+```ts
+import { Document } from '@genkit-ai/ai';
+
+const docs = [
+  Document.fromText('Genkit is an open-source AI framework.', { source: 'overview.md' }),
+  Document.fromText('Flows are type-safe, observable AI functions.', { source: 'flows.md' }),
+  Document.fromText('Use ai.generate() to call any supported model.', { source: 'models.md' }),
+];
+
+await ai.index({
+  indexer: myIndexer,
+  documents: docs,
+});
+```
+
+## Retrieving documents
+
+Use `ai.retrieve()` to fetch relevant documents at query time:
+
+```ts
+const relevantDocs = await ai.retrieve({
+  retriever: myRetriever,
+  query: 'How do flows work in Genkit?',
+  options: { k: 3 }, // number of results to return
+});
+
+console.log(relevantDocs.map((d) => d.text()));
+```
+
+## End-to-end RAG flow
+
+Here is a complete example that combines indexing and retrieval into a working Q&A application:
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    import { genkit, z } from 'genkit';
+    import { googleAI } from '@genkit-ai/google-genai';
+    import { Document } from '@genkit-ai/ai';
+
+    const ai = genkit({ plugins: [googleAI()] });
+
+    // --- Indexing phase (run once, e.g., in a build script) ---
+
+    export async function indexDocs(filePaths: string[]) {
+      const docs = await Promise.all(
+        filePaths.map(async (path) => {
+          const text = await fs.readFile(path, 'utf-8');
+          return Document.fromText(text, { source: path });
+        })
+      );
+
+      await ai.index({ indexer: myIndexer, documents: docs });
+      console.log(`Indexed ${docs.length} documents.`);
+    }
+
+    // --- Retrieval + generation phase (run on every user query) ---
+
+    const answerQuestion = ai.defineFlow(
+      {
+        name: 'answerQuestion',
+        inputSchema: z.string(),
+        outputSchema: z.string(),
+      },
+      async (question) => {
+        // 1. Retrieve relevant documents
+        const docs = await ai.retrieve({
+          retriever: myRetriever,
+          query: question,
+          options: { k: 5 },
+        });
+
+        // 2. Build an augmented prompt
+        const context = docs.map((d) => d.text()).join('\n\n');
+
+        // 3. Generate an answer grounded in the retrieved context
+        const response = await ai.generate({
+          model: 'googleai/gemini-2.5-flash',
+          system:
+            'You are a helpful assistant. Answer questions using ONLY the '
+            + 'provided context. If the context does not contain the answer, '
+            + 'say you do not know.',
+          prompt: `Context:\n${context}\n\nQuestion: ${question}`,
+        });
+
+        return response.text;
+      }
+    );
+
+    // Usage
+    const answer = await answerQuestion('How do flows work in Genkit?');
+    console.log(answer);
+    ```
+
+    Alternatively, pass retrieved docs directly via the `docs` option on `generate()` and let Genkit format them for you:
+
+    ```ts
+    const response = await ai.generate({
+      model: 'googleai/gemini-2.5-flash',
+      prompt: question,
+      docs: relevantDocs,  // injected as context automatically
+    });
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // Retrieval + generation
+    answerFlow := genkit.DefineFlow(g, "answerQuestion",
+        func(ctx context.Context, question string) (string, error) {
+            // 1. Retrieve
+            docs, err := ai.Retrieve(ctx, myRetriever,
+                ai.WithTextDocs(question),
+                ai.WithRetrieverConfig(&RetrieverConfig{K: 5}),
+            )
+            if err != nil {
+                return "", err
+            }
+
+            // 2. Build context
+            var parts []string
+            for _, doc := range docs {
+                parts = append(parts, doc.Text())
+            }
+            context := strings.Join(parts, "\n\n")
+
+            // 3. Generate
+            resp, err := genkit.GenerateText(ctx, g,
+                ai.WithModel("googleai/gemini-2.5-flash"),
+                ai.WithSystem(
+                    "Answer using ONLY the provided context. "+
+                    "Say you don't know if the context doesn't contain the answer.",
+                ),
+                ai.WithPrompt(fmt.Sprintf(
+                    "Context:\n%s\n\nQuestion: %s", context, question,
+                )),
+            )
+            return resp, err
+        },
+    )
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from genkit import Genkit
+    from genkit.ai import Document
+    from genkit.plugins.google_genai import GoogleAI
+
+    ai = Genkit(plugins=[GoogleAI()])
+
+    @ai.flow()
+    async def answer_question(question: str) -> str:
+        # 1. Retrieve relevant documents
+        docs = await ai.retrieve(
+            retriever=my_retriever,
+            query=question,
+            options={'k': 5},
+        )
+
+        # 2. Build context string
+        context = '\n\n'.join(d.text() for d in docs)
+
+        # 3. Generate grounded answer
+        response = await ai.generate(
+            model='googleai/gemini-2.5-flash',
+            system=(
+                'Answer using ONLY the provided context. '
+                'Say you do not know if the answer is not in the context.'
+            ),
+            prompt=f'Context:\n{context}\n\nQuestion: {question}',
+        )
+        return response.text
+    ```
+  </Tab>
+</Tabs>
+
+## Plugin-provided vector stores
+
+In production you will use a plugin-provided indexer and retriever rather than hand-rolling one. Genkit plugins are available for the most popular vector stores:
+
+| Vector Store | Plugin | Notes |
+|---|---|---|
+| Firebase / Firestore | `@genkit-ai/firebase` | Serverless, no infrastructure to manage. |
+| Vertex AI Vector Search | `@genkit-ai/google-genai` | Managed, high scale. |
+| Pinecone | `genkitx-pinecone` | Fully managed vector database. |
+| Chroma | `genkitx-chromadb` | Open-source, great for local dev. |
+| Local dev store | `@genkit-ai/dev-local-vectorstore` | In-process, no setup needed for local testing. |
+
+### Example: local dev vector store
+
+```ts
+import { devLocalVectorstore } from '@genkit-ai/dev-local-vectorstore';
+import { googleAI } from '@genkit-ai/google-genai';
+
+const ai = genkit({
+  plugins: [
+    googleAI(),
+    devLocalVectorstore([
+      {
+        indexName: 'docs',
+        embedder: 'googleai/gemini-embedding-001',
+      },
+    ]),
+  ],
+});
+
+// The plugin registers indexer and retriever automatically:
+const indexer  = ai.lookup('indexer',  'devLocalVectorstore/docs');
+const retriever = ai.lookup('retriever', 'devLocalVectorstore/docs');
+```
+
+### Example: Firebase Firestore vector store
+
+```ts
+import { firebase, firestoreRetriever } from '@genkit-ai/firebase';
+
+const retriever = firestoreRetriever(ai, {
+  collection: 'documents',
+  vectorField: 'embedding',
+  contentField: 'text',
+  embedder: 'googleai/gemini-embedding-001',
+});
+```
+
+See [Firebase plugin](/plugins/firebase) and [Vertex AI plugin](/plugins/vertex-ai) for full configuration options.
+
+## Defining a simple retriever
+
+If you already have data in a database and just need to map query results to `Document` objects, `defineSimpleRetriever` is a convenient shorthand:
+
+```ts
+const sqlRetriever = ai.defineSimpleRetriever(
+  {
+    name: 'sqlDocs',
+    configSchema: z.object({ limit: z.number().default(5) }),
+    // Map each row to its text content and optional metadata
+    content: (row) => row.content,
+    metadata: (row) => ({ id: row.id, title: row.title }),
+  },
+  async (query, config) => {
+    return db.query(
+      'SELECT id, title, content FROM docs ORDER BY similarity($1) LIMIT $2',
+      [query.text(), config.limit]
+    );
+  }
+);
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Firebase Plugin" href="/plugins/firebase">
+    Firestore-backed vector store and Firebase deployment.
+  </Card>
+  <Card title="Vertex AI Plugin" href="/plugins/vertex-ai">
+    Vertex AI Vector Search and Gemini embeddings.
+  </Card>
+  <Card title="Flows" href="/concepts/flows">
+    Wrap RAG logic in traced, deployable flows.
+  </Card>
+  <Card title="Evaluation" href="/guides/evaluation">
+    Measure RAG pipeline quality with built-in evaluators.
+  </Card>
+</CardGroup>

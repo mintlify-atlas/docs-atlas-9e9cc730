@@ -1,0 +1,269 @@
+---
+title: "Streaming"
+description: "Receive model response chunks as they are generated instead of waiting for the full response."
+---
+
+Streaming lets your application display or process model output progressively — useful for chat interfaces, long-form generation, and real-time feedback.
+
+## Basic streaming
+
+Use `ai.generateStream()` instead of `ai.generate()`. It returns an object with two properties:
+
+- `stream` — an async iterable of `GenerateResponseChunk` objects.
+- `response` — a `Promise<GenerateResponse>` that resolves when generation is complete.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    import { genkit } from 'genkit';
+    import { googleAI } from '@genkit-ai/google-genai';
+
+    const ai = genkit({ plugins: [googleAI()], model: 'googleai/gemini-2.0-flash' });
+
+    const { stream, response } = ai.generateStream({
+      prompt: 'Write a short story about a robot learning to paint.',
+    });
+
+    // Consume chunks as they arrive
+    for await (const chunk of stream) {
+      process.stdout.write(chunk.text);
+    }
+
+    // Await the final response for metadata (usage, finish reason, etc.)
+    const finalResponse = await response;
+    console.log('\n\nFinish reason:', finalResponse.finishReason);
+    console.log('Total tokens:', finalResponse.usage.totalTokens);
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    import asyncio
+    from genkit import Genkit
+    from genkit.plugins.google_genai import GoogleAI
+
+    ai = Genkit(plugins=[GoogleAI()])
+
+    async def main():
+        async for chunk in ai.generate_stream(
+            prompt='Write a short story about a robot learning to paint.'
+        ):
+            print(chunk.text, end='', flush=True)
+
+    asyncio.run(main())
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    package main
+
+    import (
+        "context"
+        "fmt"
+        "log"
+
+        "github.com/firebase/genkit/go/ai"
+        "github.com/firebase/genkit/go/genkit"
+        "github.com/firebase/genkit/go/plugins/googlegenai"
+    )
+
+    func main() {
+        ctx := context.Background()
+        g := genkit.Init(ctx,
+            genkit.WithPlugins(&googlegenai.GoogleAI{}),
+            genkit.WithDefaultModel("googleai/gemini-2.0-flash"),
+        )
+
+        streamCh, err := genkit.GenerateStream(ctx, g,
+            ai.WithPrompt("Write a short story about a robot learning to paint."),
+        )
+        if err != nil {
+            log.Fatal(err)
+        }
+
+        for result := range streamCh {
+            if result.Err != nil {
+                log.Fatal(result.Err)
+            }
+            if result.Done {
+                fmt.Printf("\n\nFinish reason: %s\n", result.Output.FinishReason)
+            } else {
+                fmt.Print(result.Stream.Text())
+            }
+        }
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## The `GenerateResponseChunk` object
+
+Each chunk delivered by the stream is a `GenerateResponseChunk` with the following properties:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `chunk.text` | `string` | Text content in this chunk only. |
+| `chunk.accumulatedText` | `string` | All text received up to and including this chunk. |
+| `chunk.content` | `Part[]` | Raw content parts in this chunk. |
+| `chunk.toolRequests` | `ToolRequestPart[]` | Tool call requests included in this chunk. |
+| `chunk.output` | `T \| null` | Partial structured output (when using an output schema). |
+| `chunk.index` | `number` | Message index this chunk belongs to (starts at 0). |
+
+```typescript
+const { stream } = ai.generateStream({
+  prompt: 'Summarize the French Revolution in three bullet points.',
+});
+
+for await (const chunk of stream) {
+  // chunk.text — new text in this chunk
+  // chunk.accumulatedText — everything so far
+  process.stdout.write(chunk.text);
+}
+```
+
+## Using `onChunk` callback
+
+As an alternative to async iteration, you can pass an `onChunk` callback directly to `generate()`. This is useful when you want the final response object but also want to react to chunks:
+
+```typescript
+const response = await ai.generate({
+  prompt: 'Explain quantum entanglement simply.',
+  onChunk: (chunk) => {
+    // called for each chunk as it arrives
+    process.stdout.write(chunk.text);
+  },
+});
+
+// response is the fully assembled GenerateResponse
+console.log('\n\nTotal tokens:', response.usage.totalTokens);
+```
+
+<Note>
+`onChunk` and `generateStream()` both stream the same underlying chunks. Use `generateStream()` when you want async iteration syntax; use `onChunk` when you only need a side effect and still want the final `Promise<GenerateResponse>`.
+</Note>
+
+## Streaming within a flow
+
+Streaming works inside flows. Use `generateStream()` the same way you would outside of a flow:
+
+```typescript
+const storyFlow = ai.defineFlow(
+  {
+    name: 'storyFlow',
+    inputSchema: z.string(),
+    outputSchema: z.string(),
+    streamSchema: z.string(), // type of each streaming chunk
+  },
+  async (topic, { sendChunk }) => {
+    const { stream, response } = ai.generateStream({
+      prompt: `Write a short story about: ${topic}`,
+    });
+
+    for await (const chunk of stream) {
+      sendChunk(chunk.text); // forward chunk to flow's stream
+    }
+
+    return (await response).text;
+  }
+);
+
+// Streaming a flow
+const { stream, output } = storyFlow.stream('a robot painter');
+for await (const chunk of stream) {
+  process.stdout.write(chunk);
+}
+console.log('\n\nFinal output:', await output);
+```
+
+## Streaming structured output
+
+You can stream structured output by combining `generateStream()` with an `output.schema`. Each chunk's `output` property contains the partial JSON parsed so far:
+
+```typescript
+import { z } from 'genkit';
+
+const ItemSchema = z.object({
+  title: z.string(),
+  description: z.string(),
+  price: z.number(),
+});
+
+const { stream, response } = ai.generateStream({
+  prompt: 'Generate a product listing for a mechanical keyboard.',
+  output: { schema: ItemSchema },
+});
+
+for await (const chunk of stream) {
+  // chunk.output is the partial object built from JSON received so far
+  if (chunk.output) {
+    console.log('Partial output:', chunk.output);
+  }
+}
+
+const finalResponse = await response;
+console.log('Final product:', finalResponse.output);
+```
+
+<Tip>
+For streaming structured output with the `jsonl` format, each chunk contains a complete JSON object on its own line. This is useful for streaming arrays of items one element at a time.
+</Tip>
+
+## Streaming in a web server
+
+When deploying flows as HTTP endpoints, you can stream the response to the client using server-sent events (SSE) or chunked transfer encoding. The Genkit flow server handles this automatically when a client sends a streaming request.
+
+```typescript
+import express from 'express';
+import { genkit, z } from 'genkit';
+
+const app = express();
+
+app.get('/stream', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+
+  const { stream, response } = ai.generateStream({
+    prompt: req.query.prompt as string,
+  });
+
+  for await (const chunk of stream) {
+    res.write(`data: ${JSON.stringify({ text: chunk.text })}\n\n`);
+  }
+
+  await response;
+  res.write('data: [DONE]\n\n');
+  res.end();
+});
+```
+
+## Prompt streaming
+
+Prompts defined with `ai.definePrompt()` or loaded from `.prompt` files also support streaming via the `.stream()` method:
+
+```typescript
+const storyPrompt = ai.definePrompt(
+  { name: 'story', input: { schema: z.object({ topic: z.string() }) } },
+  async ({ topic }) => ({
+    messages: [{ role: 'user', content: [{ text: `Write a story about ${topic}` }] }],
+  })
+);
+
+const { stream, response } = storyPrompt.stream({ topic: 'a lost astronaut' });
+for await (const chunk of stream) {
+  process.stdout.write(chunk.text);
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="Structured output" icon="braces" href="/guides/structured-output">
+    Stream typed JSON output chunk by chunk.
+  </Card>
+  <Card title="Flows" icon="rectangle-code" href="/concepts/flows">
+    Define streamable flows with typed stream schemas.
+  </Card>
+  <Card title="Agents" icon="robot" href="/guides/agents">
+    Stream multi-turn agent loops.
+  </Card>
+  <Card title="Deployment" icon="cloud" href="/deployment/overview">
+    Deploy streaming flows to production.
+  </Card>
+</CardGroup>

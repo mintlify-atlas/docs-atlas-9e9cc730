@@ -1,0 +1,202 @@
+---
+title: "Go quickstart"
+description: "Get up and running with Genkit in Go in under five minutes using Gemini models via the Google AI plugin."
+---
+
+This guide walks you through adding Genkit to a Go module, writing your first AI-powered function, and exploring it with the local Developer UI.
+
+<Steps>
+
+<Step title="Get a Google AI API key">
+
+Genkit's Google AI plugin uses the Gemini API. Get a free API key from [Google AI Studio](https://aistudio.google.com/apikey).
+
+<Note>
+Set the key as an environment variable before running your app:
+
+```bash
+export GEMINI_API_KEY="your-api-key"
+```
+
+The `googlegenai.GoogleAI` plugin also accepts `GOOGLE_API_KEY`. You can pass the key directly in the plugin struct (`&googlegenai.GoogleAI{APIKey: "..."}`) but using an environment variable keeps credentials out of source control.
+</Note>
+
+</Step>
+
+<Step title="Add Genkit to your Go module">
+
+Initialize a new module (or open an existing one), then fetch the Genkit packages:
+
+```bash
+go mod init example.com/myapp
+go get github.com/firebase/genkit/go
+go get github.com/firebase/genkit/go/plugins/googlegenai
+```
+
+Install the Genkit CLI to get the Developer UI:
+
+```bash
+curl -sL cli.genkit.dev | bash
+```
+
+</Step>
+
+<Step title="Write your first Genkit app">
+
+Create `main.go`:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/firebase/genkit/go/ai"
+	"github.com/firebase/genkit/go/genkit"
+	"github.com/firebase/genkit/go/plugins/googlegenai"
+)
+
+func main() {
+	ctx := context.Background()
+
+	// Initialize Genkit with the Google AI plugin.
+	// The plugin reads GEMINI_API_KEY (or GOOGLE_API_KEY) from the environment.
+	g := genkit.Init(ctx, genkit.WithPlugins(&googlegenai.GoogleAI{}))
+
+	// Define a flow — a traced, deployable AI function.
+	jokeFlow := genkit.DefineFlow(g, "tellJoke",
+		func(ctx context.Context, topic string) (string, error) {
+			return genkit.GenerateText(ctx, g,
+				ai.WithModelName("googleai/gemini-2.5-flash"),
+				ai.WithPrompt("Tell me a short joke about %s.", topic),
+			)
+		},
+	)
+
+	joke, err := jokeFlow.Run(ctx, "software engineers")
+	if err != nil {
+		log.Fatalf("flow failed: %v", err)
+	}
+	fmt.Println(joke)
+}
+```
+
+Run it directly:
+
+```bash
+go run main.go
+```
+
+</Step>
+
+<Step title="Explore with the Developer UI">
+
+The Genkit CLI wraps your app with tracing and launches a local Developer UI where you can run flows interactively and inspect execution traces.
+
+```bash
+genkit start -- go run main.go
+```
+
+This starts your app, then opens the Developer UI at `http://localhost:4000`. From there you can:
+
+- **Run** the `tellJoke` flow with any input without restarting your app.
+- **Inspect traces** to see the full request and response sent to Gemini.
+- **Compare models** by switching between `gemini-2.5-flash` and `gemini-2.5-pro` in real time.
+
+<Tip>
+Set the `GENKIT_ENV=dev` environment variable to keep the reflection API server running outside of `genkit start`, which is useful when iterating during development.
+</Tip>
+
+</Step>
+
+<Step title="Add structured output (optional)">
+
+`genkit.GenerateData` uses Go generics to return type-safe, unmarshaled structs:
+
+```go
+type Recipe struct {
+	Title       string   `json:"title"`
+	Ingredients []string `json:"ingredients"`
+	Steps       []string `json:"steps"`
+}
+
+recipeFlow := genkit.DefineFlow(g, "generateRecipe",
+	func(ctx context.Context, dish string) (*Recipe, error) {
+		recipe, _, err := genkit.GenerateData[Recipe](ctx, g,
+			ai.WithModelName("googleai/gemini-2.5-flash"),
+			ai.WithPrompt("Create a recipe for %s.", dish),
+		)
+		return recipe, err
+	},
+)
+
+recipe, err := recipeFlow.Run(ctx, "chocolate chip cookies")
+if err != nil {
+	log.Fatal(err)
+}
+fmt.Printf("%s — ingredients: %v\n", recipe.Title, recipe.Ingredients)
+```
+
+</Step>
+
+<Step title="Expose flows as HTTP endpoints (optional)">
+
+To serve your flows over HTTP, register them with the standard `net/http` mux:
+
+```go
+import (
+	"log"
+	"net/http"
+)
+
+mux := http.NewServeMux()
+for _, flow := range genkit.ListFlows(g) {
+	mux.HandleFunc("POST /"+flow.Name(), genkit.Handler(flow))
+}
+log.Fatal(http.ListenAndServe(":8080", mux))
+```
+
+Then call the flow:
+
+```bash
+curl -X POST http://localhost:8080/tellJoke \
+  -H "Content-Type: application/json" \
+  -d '{"data": "gophers"}'
+```
+
+`genkit.Handler` returns a standard `http.HandlerFunc`, so it works with any Go HTTP framework (Gin, Echo, Chi, and others).
+
+</Step>
+
+</Steps>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Concepts: Flows" icon="arrows-split-up-and-left" href="/concepts/flows">
+    Learn how flows add observability, retries, and HTTP exposure to any AI function.
+  </Card>
+  <Card title="Concepts: Models" icon="microchip" href="/concepts/models">
+    Understand model references, config options, multimodal inputs, and streaming.
+  </Card>
+  <Card title="Guides: Structured output" icon="brackets-curly" href="/guides/structured-output">
+    Return validated, type-safe structs from any model call using Go generics.
+  </Card>
+  <Card title="Guides: Streaming" icon="wave-square" href="/guides/streaming">
+    Stream tokens to the client as they arrive using `genkit.GenerateStream`.
+  </Card>
+  <Card title="Guides: Agents" icon="robot" href="/guides/agents">
+    Build multi-step agentic workflows with `genkit.DefineTool` and looping.
+  </Card>
+  <Card title="Plugins: Google AI" icon="google" href="/plugins/google-genai">
+    Full reference for the `googlegenai` plugin including Vertex AI, Imagen, and embeddings.
+  </Card>
+  <Card title="Plugins overview" icon="puzzle-piece" href="/plugins/overview">
+    Browse all available plugins: Vertex AI, Ollama, Anthropic, and more.
+  </Card>
+  <Card title="Developer tools" icon="terminal" href="/guides/devtools">
+    Deep dive into the Genkit CLI and Developer UI.
+  </Card>
+</CardGroup>

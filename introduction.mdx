@@ -1,0 +1,139 @@
+---
+title: "Introduction"
+description: "Genkit is an open-source framework by Google/Firebase for building production-ready AI-powered applications in JavaScript/TypeScript, Go, and Python."
+---
+
+Genkit gives you a unified set of APIs for integrating AI models, defining type-safe workflows (flows), managing prompts, and building retrieval-augmented generation (RAG) pipelines — all with built-in observability and local developer tooling.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart: JavaScript" icon="js" href="/quickstart-js">
+    Get up and running with Genkit in Node.js or TypeScript in minutes.
+  </Card>
+  <Card title="Quickstart: Go" icon="golang" href="/quickstart-go">
+    Start building AI features in your Go application with Genkit.
+  </Card>
+  <Card title="Quickstart: Python" icon="python" href="/quickstart-python">
+    Use Genkit's Python SDK (alpha) to add AI capabilities to your Python app.
+  </Card>
+  <Card title="Core Concepts" icon="book" href="/concepts/flows">
+    Learn about flows, models, tools, prompts, and RAG.
+  </Card>
+</CardGroup>
+
+## What is Genkit?
+
+Genkit simplifies AI application development by providing:
+
+- **A unified model interface** — integrate models from Google Gemini, Anthropic Claude, OpenAI-compatible APIs, Ollama, and more with a consistent API
+- **Type-safe flows** — define AI workflows with input/output schema validation using Zod (JS/TS) or Pydantic (Python)
+- **Tool calling** — let models invoke your functions automatically with multi-turn reasoning loops
+- **Prompt management** — use `.prompt` files (Dotprompt format) with Handlebars templating, YAML frontmatter, and versioning
+- **RAG pipelines** — built-in abstractions for embedders, retrievers, and vector stores
+- **Developer tooling** — local CLI and Developer UI for testing, tracing, and evaluation
+- **Production monitoring** — OpenTelemetry-based tracing exportable to Google Cloud, Firebase, or third-party backends
+
+## Language support
+
+<CardGroup cols={3}>
+  <Card title="JavaScript / TypeScript" icon="js">
+    **Production-ready.** Full feature support. Published as the `genkit` npm package.
+  </Card>
+  <Card title="Go" icon="golang">
+    **Production-ready.** Full feature support. Available as `github.com/firebase/genkit/go`.
+  </Card>
+  <Card title="Python" icon="python">
+    **Alpha.** Core functionality available. Published as the `genkit` PyPI package.
+  </Card>
+</CardGroup>
+
+## How it works
+
+<Steps>
+  <Step title="Initialize Genkit with plugins">
+    Create a Genkit instance and load model provider plugins (Google Gemini, Vertex AI, Ollama, etc.).
+  </Step>
+  <Step title="Define flows and tools">
+    Wrap your AI logic in typed flows. Define tools that models can call automatically.
+  </Step>
+  <Step title="Test with the Developer UI">
+    Use `genkit start` to launch the local Developer UI — run flows, inspect traces, and iterate fast.
+  </Step>
+  <Step title="Deploy and monitor">
+    Deploy to Firebase, Cloud Run, or any platform. Monitor model calls, latency, and errors in production.
+  </Step>
+</Steps>
+
+## Quick example
+
+<CodeGroup>
+
+```typescript TypeScript
+import { genkit } from 'genkit';
+import { googleAI } from '@genkit-ai/google-genai';
+
+const ai = genkit({ plugins: [googleAI()] });
+
+const { text } = await ai.generate({
+  model: googleAI.model('gemini-2.5-flash'),
+  prompt: 'Explain what Genkit is in one sentence.',
+});
+
+console.log(text);
+```
+
+```go Go
+package main
+
+import (
+  "context"
+  "fmt"
+  "log"
+
+  "github.com/firebase/genkit/go/ai"
+  "github.com/firebase/genkit/go/genkit"
+  "github.com/firebase/genkit/go/plugins/googlegenai"
+)
+
+func main() {
+  ctx := context.Background()
+  g := genkit.Init(ctx, genkit.WithPlugins(&googlegenai.GoogleAI{}))
+
+  resp, err := genkit.GenerateText(ctx, g,
+    ai.WithModelName("googleai/gemini-2.0-flash"),
+    ai.WithPrompt("Explain what Genkit is in one sentence."),
+  )
+  if err != nil {
+    log.Fatal(err)
+  }
+  fmt.Println(resp)
+}
+```
+
+```python Python
+from genkit import Genkit
+from genkit.plugins.google_genai import GoogleAI
+
+ai = Genkit(plugins=[GoogleAI()], model='googleai/gemini-2.0-flash')
+
+response = await ai.generate(prompt='Explain what Genkit is in one sentence.')
+print(response.text)
+```
+
+</CodeGroup>
+
+## Explore further
+
+<CardGroup cols={2}>
+  <Card title="Core Concepts" icon="lightbulb" href="/concepts/flows">
+    Understand flows, models, tools, and prompts — the building blocks of every Genkit app.
+  </Card>
+  <Card title="Plugin ecosystem" icon="plug" href="/plugins/overview">
+    Browse official plugins for model providers, vector stores, and telemetry backends.
+  </Card>
+  <Card title="Guides" icon="map" href="/guides/structured-output">
+    Practical guides for structured output, streaming, agents, and evaluation.
+  </Card>
+  <Card title="Deploy your app" icon="cloud" href="/deployment/overview">
+    Deploy to Firebase, Cloud Run, or any platform that runs your chosen language.
+  </Card>
+</CardGroup>

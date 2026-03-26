@@ -1,0 +1,317 @@
+---
+title: "Flows"
+description: "Type-safe, observable functions that wrap AI logic. Flows are the primary unit of deployment in Genkit."
+---
+
+A **flow** is a Genkit-managed function with typed inputs and outputs that wraps your AI logic. Every invocation is automatically traced end-to-end, appears in the [Dev UI](/guides/devtools), and can be exposed as an HTTP endpoint for production use.
+
+Flows are the unit you deploy. Whether you're building a simple Q&A endpoint or an agent with many steps, you define it as a flow.
+
+## Defining a flow
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    import { genkit, z } from 'genkit';
+    import { googleAI } from '@genkit-ai/google-genai';
+
+    const ai = genkit({
+      plugins: [googleAI()],
+      model: 'googleai/gemini-2.5-flash',
+    });
+
+    const summarizeFlow = ai.defineFlow(
+      {
+        name: 'summarize',
+        inputSchema: z.object({ text: z.string() }),
+        outputSchema: z.object({ summary: z.string() }),
+      },
+      async (input) => {
+        const response = await ai.generate({
+          prompt: `Summarize the following in one sentence:\n\n${input.text}`,
+        });
+        return { summary: response.text };
+      }
+    );
+    ```
+
+    `inputSchema` and `outputSchema` are [Zod](https://zod.dev) schemas. Genkit validates inputs and outputs against them automatically.
+  </Tab>
+  <Tab title="Go">
+    ```go
+    package main
+
+    import (
+        "context"
+        "fmt"
+
+        "github.com/firebase/genkit/go/ai"
+        "github.com/firebase/genkit/go/genkit"
+        "github.com/firebase/genkit/go/plugins/googlegenai"
+    )
+
+    type SummarizeInput struct {
+        Text string `json:"text"`
+    }
+
+    type SummarizeOutput struct {
+        Summary string `json:"summary"`
+    }
+
+    func main() {
+        ctx := context.Background()
+        g := genkit.Init(ctx,
+            genkit.WithPlugins(&googlegenai.GoogleAI{}),
+            genkit.WithDefaultModel("googleai/gemini-2.5-flash"),
+        )
+
+        summarizeFlow := genkit.DefineFlow(g, "summarize",
+            func(ctx context.Context, input SummarizeInput) (SummarizeOutput, error) {
+                resp, err := genkit.GenerateText(ctx, g,
+                    ai.WithPrompt(fmt.Sprintf("Summarize the following in one sentence:\n\n%s", input.Text)),
+                )
+                if err != nil {
+                    return SummarizeOutput{}, err
+                }
+                return SummarizeOutput{Summary: resp}, nil
+            },
+        )
+
+        result, err := summarizeFlow.Run(ctx, SummarizeInput{Text: "Genkit is a framework..."})
+        _ = result
+        _ = err
+    }
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from genkit import Genkit
+    from genkit.plugins.google_genai import GoogleAI
+    from pydantic import BaseModel
+
+    ai = Genkit(
+        plugins=[GoogleAI()],
+        model="googleai/gemini-2.5-flash",
+    )
+
+    class SummarizeInput(BaseModel):
+        text: str
+
+    class SummarizeOutput(BaseModel):
+        summary: str
+
+    @ai.flow()
+    async def summarize(input: SummarizeInput) -> SummarizeOutput:
+        response = await ai.generate(
+            prompt=f"Summarize the following in one sentence:\n\n{input.text}"
+        )
+        return SummarizeOutput(summary=response.text)
+    ```
+  </Tab>
+</Tabs>
+
+## Calling a flow
+
+Flows are callable like regular functions. They return the output value defined by the output schema.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    const result = await summarizeFlow({ text: 'Genkit is an open-source framework...' });
+    console.log(result.summary);
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    result, err := summarizeFlow.Run(ctx, SummarizeInput{
+        Text: "Genkit is an open-source framework...",
+    })
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println(result.Summary)
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    result = await summarize(SummarizeInput(text="Genkit is an open-source framework..."))
+    print(result.summary)
+    ```
+  </Tab>
+</Tabs>
+
+## Named steps with `run`
+
+Use `ai.run()` (TypeScript) or `genkit.Run()` (Go) to give individual steps within a flow their own trace spans. This makes it easy to pinpoint exactly where time is spent in the Dev UI.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    const ragFlow = ai.defineFlow('rag', async (query: string) => {
+      const docs = await ai.run('retrieve', async () => {
+        return myRetriever.retrieve(query);
+      });
+
+      const response = await ai.run('generate', async () => {
+        return ai.generate({
+          prompt: `Answer using these docs:\n${docs.join('\n')}\n\nQuestion: ${query}`,
+        });
+      });
+
+      return response.text;
+    });
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    ragFlow := genkit.DefineFlow(g, "rag",
+        func(ctx context.Context, query string) (string, error) {
+            docs, err := genkit.Run(ctx, "retrieve", func() ([]string, error) {
+                return myRetriever.Retrieve(ctx, query)
+            })
+            if err != nil {
+                return "", err
+            }
+
+            resp, err := genkit.Run(ctx, "generate", func() (string, error) {
+                return genkit.GenerateText(ctx, g,
+                    ai.WithPrompt(fmt.Sprintf(
+                        "Answer using these docs:\n%s\n\nQuestion: %s",
+                        strings.Join(docs, "\n"), query,
+                    )),
+                )
+            })
+            return resp, err
+        },
+    )
+    ```
+  </Tab>
+</Tabs>
+
+## Flows as HTTP endpoints
+
+Flows can be exposed as HTTP endpoints so that any HTTP client can invoke them. The request body is the flow's input and the response body is its output.
+
+<Tabs>
+  <Tab title="TypeScript">
+    Use `onFlow` from `@genkit-ai/firebase` or wrap the flow in an Express/Cloud Functions handler:
+
+    ```ts
+    import { onFlow } from '@genkit-ai/firebase/functions';
+
+    export const summarize = onFlow(
+      ai,
+      {
+        name: 'summarize',
+        inputSchema: z.object({ text: z.string() }),
+        outputSchema: z.object({ summary: z.string() }),
+        authPolicy: ...,
+      },
+      async (input) => { /* ... */ }
+    );
+    ```
+
+    Or serve all registered flows with Genkit's built-in flow server:
+
+    ```ts
+    import express from 'express';
+    import { expressHandler } from '@genkit-ai/express';
+
+    const app = express();
+    app.post('/summarize', expressHandler(summarizeFlow));
+    app.listen(3000);
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from genkit.web import create_flows_asgi_app
+
+    # Exposes every registered flow as POST /<flow_name>
+    app = create_flows_asgi_app(registry=ai.registry)
+    # Run with: uvicorn main:app
+    ```
+
+    Or with Flask:
+
+    ```python
+    from flask import Flask
+    from genkit.plugins.flask import genkit_flask_handler
+
+    app = Flask(__name__)
+
+    @app.route('/summarize', methods=['POST'])
+    @genkit_flask_handler(ai)
+    @ai.flow()
+    async def summarize_flow(input: SummarizeInput) -> SummarizeOutput:
+        ...
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import "github.com/firebase/genkit/go/plugins/server"
+
+    mux := http.NewServeMux()
+    for _, flow := range genkit.ListFlows(g) {
+        mux.HandleFunc("POST /"+flow.Name(), server.Handler(flow))
+    }
+    http.ListenAndServe(":8080", mux)
+    ```
+  </Tab>
+</Tabs>
+
+## Observability
+
+Every flow run creates a trace that records:
+
+- Flow input and output
+- Every named `run()` step
+- Model calls, including prompts and responses
+- Tool calls and their outputs
+- Latency at each level
+
+Traces are visible in the Genkit [Dev UI](/guides/devtools) during development and can be exported to Cloud Trace, Jaeger, or any OpenTelemetry-compatible backend in production.
+
+<Note>
+  The Dev UI starts automatically when you run `genkit start` (TypeScript/Python) or set `GENKIT_ENV=dev` (Go). Flows and their traces appear in the **Flows** and **Traces** panels.
+</Note>
+
+## Background flows
+
+Some operations—like video generation or long-running batch jobs—take too long to return synchronously. Genkit supports **background flows** (also called operations) that return immediately with an operation handle. The caller can then poll the handle to check on progress.
+
+```ts
+// TypeScript — start a long-running background generation
+let operation = await ai.generate({
+  model: googleAI.model('veo-2.0-generate-001'),
+  prompt: 'A banana riding a bicycle.',
+});
+
+// Poll until done
+while (!operation.done) {
+  operation = await ai.checkOperation(operation);
+  await new Promise((resolve) => setTimeout(resolve, 5000));
+}
+
+const result = operation.result;
+```
+
+<Tip>
+  For most use cases, regular (synchronous) flows are the right choice. Use background flows only when the underlying model or task genuinely cannot complete within a standard HTTP request timeout.
+</Tip>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Models" href="/concepts/models">
+    Learn how to call AI models from within flows.
+  </Card>
+  <Card title="Tools" href="/concepts/tools">
+    Give models the ability to call your functions.
+  </Card>
+  <Card title="Streaming" href="/guides/streaming">
+    Stream responses token-by-token from flows.
+  </Card>
+  <Card title="Dev Tools" href="/guides/devtools">
+    Inspect flow traces and replay runs in the Dev UI.
+  </Card>
+</CardGroup>

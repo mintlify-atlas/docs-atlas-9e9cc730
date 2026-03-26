@@ -1,0 +1,307 @@
+---
+title: "Agents"
+description: "Build AI agents — flows that use tools in multi-turn loops to autonomously complete tasks."
+---
+
+An agent is a flow that gives a model access to tools and lets it decide when and how to call them. The model can call multiple tools across multiple turns until it has enough information to produce a final answer.
+
+Genkit handles the tool call loop automatically: when the model returns a tool request, Genkit executes the tool, feeds the result back to the model, and continues until the model stops calling tools.
+
+## How the tool loop works
+
+<Steps>
+  <Step title="Send prompt + tools">
+    Your code calls `ai.generate()` with a list of available tools.
+  </Step>
+  <Step title="Model requests a tool">
+    The model returns a `toolRequest` part instead of (or alongside) text.
+  </Step>
+  <Step title="Genkit executes the tool">
+    Genkit finds the tool by name, validates the input, and calls your function.
+  </Step>
+  <Step title="Tool result fed back">
+    The tool's return value is added to the message history as a `toolResponse` part.
+  </Step>
+  <Step title="Model continues">
+    The model sees the tool result and either calls another tool or returns its final answer.
+  </Step>
+</Steps>
+
+This loop repeats until the model produces a response with no tool calls, or until `maxTurns` is reached.
+
+## Basic agent example
+
+The following example shows a simple research agent with two tools: a web search tool and a calculator.
+
+```typescript
+import { genkit, z } from 'genkit';
+import { googleAI } from '@genkit-ai/google-genai';
+
+const ai = genkit({ plugins: [googleAI()], model: 'googleai/gemini-2.0-flash' });
+
+// Tool 1: web search (simulated)
+const searchWeb = ai.defineTool(
+  {
+    name: 'searchWeb',
+    description: 'Search the web for current information on a topic.',
+    inputSchema: z.object({ query: z.string().describe('The search query') }),
+    outputSchema: z.string(),
+  },
+  async ({ query }) => {
+    // In production, call a real search API
+    return `Search results for "${query}": [result 1, result 2, result 3]`;
+  }
+);
+
+// Tool 2: calculator
+const calculate = ai.defineTool(
+  {
+    name: 'calculate',
+    description: 'Evaluate a mathematical expression.',
+    inputSchema: z.object({ expression: z.string().describe('Math expression to evaluate') }),
+    outputSchema: z.number(),
+  },
+  async ({ expression }) => {
+    // In production, use a safe math evaluation library
+    return eval(expression) as number;
+  }
+);
+
+// Define the agent as a flow
+const researchAgent = ai.defineFlow(
+  {
+    name: 'researchAgent',
+    inputSchema: z.string(),
+    outputSchema: z.string(),
+  },
+  async (question) => {
+    const response = await ai.generate({
+      system: 'You are a helpful research assistant. Use the tools available to answer questions accurately.',
+      prompt: question,
+      tools: [searchWeb, calculate],
+      maxTurns: 5, // allow up to 5 tool-call rounds
+    });
+    return response.text;
+  }
+);
+
+// Run the agent
+const answer = await researchAgent('What is 15% of the population of France?');
+console.log(answer);
+```
+
+## Defining tools
+
+Tools are defined with `ai.defineTool()`. Each tool has a name, description, input schema, output schema, and an implementation function:
+
+```typescript
+const lookupUser = ai.defineTool(
+  {
+    name: 'lookupUser',
+    description: 'Look up a user account by email address.',
+    inputSchema: z.object({
+      email: z.string().email().describe('The user\'s email address'),
+    }),
+    outputSchema: z.object({
+      userId: z.string(),
+      name: z.string(),
+      plan: z.enum(['free', 'pro', 'enterprise']),
+    }),
+  },
+  async ({ email }) => {
+    const user = await db.users.findByEmail(email);
+    return { userId: user.id, name: user.name, plan: user.plan };
+  }
+);
+```
+
+The description is the primary signal the model uses to decide whether to call a tool. Be specific and include details about when it should and should not be used.
+
+<Tip>
+Tool descriptions are as important as your prompt. A clear, accurate description dramatically improves how reliably the model calls the right tool at the right time.
+</Tip>
+
+## `maxTurns` — limiting iterations
+
+The `maxTurns` option caps the number of tool-calling rounds. The default is `5`. If the model has not finished within `maxTurns` iterations, `generate()` throws a `GenkitError`.
+
+```typescript
+const response = await ai.generate({
+  prompt: 'Research the history of the Eiffel Tower and give me 5 key facts.',
+  tools: [searchWeb],
+  maxTurns: 10, // allow more turns for complex research tasks
+});
+```
+
+## Inspecting tool calls
+
+After a `generate()` call completes, you can inspect which tools were called using `response.toolRequests`. This is useful for logging, debugging, and building audit trails:
+
+```typescript
+const response = await ai.generate({
+  prompt: 'What is the weather in Tokyo and London?',
+  tools: [getWeather],
+});
+
+// response.toolRequests contains ALL tool requests made during the run
+for (const toolRequest of response.toolRequests) {
+  console.log(`Tool called: ${toolRequest.toolRequest.name}`);
+  console.log(`Input: ${JSON.stringify(toolRequest.toolRequest.input)}`);
+}
+
+console.log('Final answer:', response.text);
+```
+
+<Note>
+`response.toolRequests` only contains tool requests from the _final_ model message. To see all tool calls across all turns, inspect `response.messages`.
+</Note>
+
+## Forcing tool use with `toolChoice`
+
+By default, the model can choose whether to call tools. Set `toolChoice: 'required'` to force the model to call at least one tool, or `toolChoice: 'none'` to disable tool calls even if tools are listed:
+
+```typescript
+// Force the model to always call a tool
+const response = await ai.generate({
+  prompt: 'I need to check the user account for alice@example.com.',
+  tools: [lookupUser],
+  toolChoice: 'required', // model MUST call a tool
+});
+
+// Disable tool calls (useful for read-only analysis turn)
+const analysis = await ai.generate({
+  prompt: 'Summarize the data we have collected so far.',
+  messages: previousMessages,
+  tools: [lookupUser],
+  toolChoice: 'none', // model must NOT call tools
+});
+```
+
+Valid values:
+- `'auto'` (default) — model decides whether to call tools.
+- `'required'` — model must call at least one tool.
+- `'none'` — model must not call any tools.
+
+## Returning tool requests manually
+
+Set `returnToolRequests: true` to stop the automatic tool call loop and handle tool execution yourself. This gives you full control over how tools are invoked:
+
+```typescript
+const response = await ai.generate({
+  prompt: 'Delete all records older than 30 days.',
+  tools: [deleteRecords],
+  returnToolRequests: true, // stop before executing tools
+});
+
+if (response.toolRequests.length > 0) {
+  const toolRequest = response.toolRequests[0];
+  console.log('Model wants to call:', toolRequest.toolRequest.name);
+  console.log('With input:', toolRequest.toolRequest.input);
+
+  // Add a human-approval step here before proceeding
+  const approved = await askHumanForApproval(toolRequest);
+  if (!approved) {
+    throw new Error('Operation not approved.');
+  }
+}
+```
+
+## Interrupt pattern (human-in-the-loop)
+
+Genkit supports a formal interrupt mechanism for workflows that require human approval or input before a tool runs. Use `ai.defineInterrupt()` to mark a tool as interruptible:
+
+```typescript
+const approvePayment = ai.defineInterrupt({
+  name: 'approvePayment',
+  description: 'Request approval to process a payment.',
+  inputSchema: z.object({
+    amount: z.number(),
+    recipient: z.string(),
+  }),
+});
+
+const response = await ai.generate({
+  prompt: 'Process a $500 payment to vendor@example.com.',
+  tools: [approvePayment],
+});
+
+// If the model called an interrupt tool, response.interrupts is non-empty
+if (response.interrupts.length > 0) {
+  const interrupt = response.interrupts[0];
+
+  // Persist response.messages — you need them to resume later
+  const savedMessages = response.messages;
+
+  // ... wait for human approval ...
+
+  // Resume by providing the tool response
+  const resumedResponse = await ai.generate({
+    messages: savedMessages,
+    resume: approvePayment.respond(interrupt, { approved: true }),
+  });
+
+  console.log(resumedResponse.text);
+}
+```
+
+## Multi-tool agent in Go
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+
+    "github.com/firebase/genkit/go/ai"
+    "github.com/firebase/genkit/go/genkit"
+    "github.com/firebase/genkit/go/plugins/googlegenai"
+)
+
+type WeatherInput struct {
+    City string `json:"city"`
+}
+
+func main() {
+    ctx := context.Background()
+    g := genkit.Init(ctx,
+        genkit.WithPlugins(&googlegenai.GoogleAI{}),
+        genkit.WithDefaultModel("googleai/gemini-2.0-flash"),
+    )
+
+    weatherTool := genkit.DefineTool(g, "getWeather",
+        "Get the current weather for a city.",
+        func(ctx *ai.ToolContext, input WeatherInput) (string, error) {
+            // In production, call a real weather API
+            return fmt.Sprintf("Weather in %s: 22°C, partly cloudy", input.City), nil
+        },
+    )
+
+    resp, err := genkit.Generate(ctx, g,
+        ai.WithPrompt("What is the weather like in Tokyo and Paris today?"),
+        ai.WithTools(weatherTool),
+        ai.WithMaxTurns(5),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    fmt.Println(resp.Text())
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="Tools" icon="wrench" href="/concepts/tools">
+    Learn how tools are defined and resolved.
+  </Card>
+  <Card title="Flows" icon="rectangle-code" href="/concepts/flows">
+    Wrap agents in observable, deployable flows.
+  </Card>
+  <Card title="Structured output" icon="braces" href="/guides/structured-output">
+    Return typed results from agent runs.
+  </Card>
+  <Card title="Sessions" icon="messages" href="/concepts/sessions">
+    Persist agent conversation history across requests.
+  </Card>
+</CardGroup>

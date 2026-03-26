@@ -1,0 +1,261 @@
+---
+title: "Production monitoring and observability"
+description: "Configure tracing, metrics, and structured logging for Genkit apps in production."
+---
+
+Genkit is built on [OpenTelemetry](https://opentelemetry.io/). Every flow execution, model call, and tool invocation creates a span that records input, output, latency, and token usage. In production you export those spans to Google Cloud Trace, Cloud Monitoring, and Cloud Logging using the `@genkit-ai/google-cloud` plugin (or its language equivalents).
+
+## What is automatically traced
+
+Genkit instruments the following operations without any extra code:
+
+| Span type | Recorded automatically |
+|-----------|------------------------|
+| Flow execution | Input, output, duration, success/error |
+| Model call | Model name, input/output (redacted in export), token usage, latency |
+| Tool call | Tool name, invocation count |
+| `ai.run()` step | Step name, duration |
+
+Each span carries a `genkit:type` attribute (`flow`, `action`, `model`, `tool`) and a `genkit:path` that shows the full call chain, for example `/menuSuggestion/googleai/gemini-2.0-flash`.
+
+<Note>
+By default, model input and output content is **redacted** before export to Google Cloud (`genkit:input` and `genkit:output` are replaced with `<redacted>`). To retain them, set `disableLoggingInputAndOutput: false` (it defaults to `false`, meaning redaction is **on** during export). Check the option description in `GcpTelemetryConfigOptions` for the exact semantics before enabling this in production.
+</Note>
+
+## Node.js — `@genkit-ai/google-cloud`
+
+### Installation
+
+```bash
+npm install @genkit-ai/google-cloud
+```
+
+### Configuration
+
+```typescript
+import { enableGoogleCloudTelemetry } from '@genkit-ai/google-cloud';
+import { genkit } from 'genkit';
+
+// Call before constructing the Genkit instance.
+await enableGoogleCloudTelemetry({
+  // projectId is auto-detected from ADC / GOOGLE_CLOUD_PROJECT when omitted.
+  projectId: 'my-gcp-project',
+
+  // Sampling — AlwaysOnSampler is the default.
+  // sampler: new TraceIdRatioBasedSampler(0.1), // 10 % sampling
+
+  // Disable individual signals if not needed:
+  // disableMetrics: false,
+  // disableTraces: false,
+
+  // Redact model I/O before exporting to Cloud Trace.
+  // disableLoggingInputAndOutput: false,
+
+  // Export intervals (Google Cloud requires >= 5000 ms).
+  metricExportIntervalMillis: 60_000,
+});
+
+const ai = genkit({ plugins: [...] });
+```
+
+The plugin reads credentials from Application Default Credentials (ADC). On Cloud Run, GKE, or Cloud Functions no additional setup is needed. Outside of GCP, run `gcloud auth application-default login` or provide a `credentials` option.
+
+### Available options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `projectId` | `string` | ADC / env | Google Cloud project to export to. |
+| `credentials` | `JWTInput` | ADC | Explicit credentials for non-GCP environments. |
+| `sampler` | `Sampler` | AlwaysOn | OpenTelemetry trace sampler. |
+| `autoInstrumentation` | `boolean` | `true` | Enable OTel auto-instrumentation for popular libraries. |
+| `metricExportIntervalMillis` | `number` | `60000` | Metric export frequency (minimum 5000 ms). |
+| `disableMetrics` | `boolean` | `false` | Skip metric export. |
+| `disableTraces` | `boolean` | `false` | Skip trace export. |
+| `disableLoggingInputAndOutput` | `boolean` | `false` | Redact model I/O in exported spans and logs. |
+| `forceDevExport` | `boolean` | `false` | Export even when `GENKIT_ENV=dev` (for local testing). |
+
+## Python — `genkit-google-cloud`
+
+Install:
+
+```bash
+pip install genkit-google-cloud
+```
+
+Enable telemetry:
+
+```python
+from genkit.plugins.google_cloud import GoogleCloud
+from genkit import Genkit
+
+ai = Genkit(
+    plugins=[
+        GoogleCloud(),   # reads GOOGLE_CLOUD_PROJECT from env
+    ],
+)
+```
+
+The Python `google-cloud` plugin follows the same trace/metric/log pipeline as the Node.js plugin.
+
+### Third-party telemetry backends (Python)
+
+The `genkit-observability` community plugin provides exporters for Datadog, Honeycomb, Sentry, and other OpenTelemetry-compatible backends:
+
+```python
+from genkit.plugins.observability.datadog import DatadogTelemetry
+
+ai = Genkit(
+    plugins=[
+        DatadogTelemetry(api_key='DD_API_KEY'),
+    ],
+)
+```
+
+See the plugin README for the full list of supported backends.
+
+## Go — `googlecloud` plugin
+
+Import:
+
+```go
+import "github.com/firebase/genkit/go/plugins/googlecloud"
+```
+
+Enable telemetry **before** calling `genkit.Init`:
+
+```go
+package main
+
+import (
+    "context"
+
+    "github.com/firebase/genkit/go/genkit"
+    "github.com/firebase/genkit/go/plugins/googlecloud"
+    "github.com/firebase/genkit/go/plugins/googlegenai"
+)
+
+func main() {
+    // Zero-config: project ID auto-detected from GOOGLE_CLOUD_PROJECT or ADC.
+    googlecloud.EnableGoogleCloudTelemetry(nil)
+
+    // With explicit configuration:
+    // googlecloud.EnableGoogleCloudTelemetry(&googlecloud.GoogleCloudTelemetryOptions{
+    //     ProjectID:      "my-project",
+    //     DisableMetrics: false,
+    //     DisableTraces:  false,
+    // })
+
+    ctx := context.Background()
+    g := genkit.Init(ctx, genkit.WithPlugins(&googlegenai.GoogleAI{}))
+    // ... define flows and start server
+}
+```
+
+### Go telemetry options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `ProjectID` | `string` | env | Google Cloud project. |
+| `Credentials` | `*google.Credentials` | ADC | Explicit credentials. |
+| `Sampler` | `sdktrace.Sampler` | AlwaysOn | Trace sampler. |
+| `MetricExportIntervalMillis` | `*int` | 300000 (prod) | Export frequency. |
+| `DisableMetrics` | `bool` | `false` | Skip metric export. |
+| `DisableTraces` | `bool` | `false` | Skip trace export. |
+| `DisableLoggingInputAndOutput` | `bool` | `false` | Redact model I/O. |
+| `ForceDevExport` | `bool` | `false` | Export in `GENKIT_ENV=dev`. |
+
+## Firebase telemetry
+
+For Firebase Cloud Functions deployments, use `enableFirebaseTelemetry` from `@genkit-ai/firebase`. It wraps `enableGoogleCloudTelemetry` and exports to the same Google Cloud Observability suite:
+
+```typescript
+import { enableFirebaseTelemetry } from '@genkit-ai/firebase';
+
+enableFirebaseTelemetry({
+  // Accepts the same GcpTelemetryConfigOptions as enableGoogleCloudTelemetry.
+  disableLoggingInputAndOutput: true,
+});
+```
+
+## Viewing traces in Google Cloud Console
+
+<Steps>
+  <Step title="Open Cloud Trace">
+    Go to [console.cloud.google.com/traces](https://console.cloud.google.com/traces) and select your project.
+  </Step>
+  <Step title="Filter by Genkit flow">
+    In the Trace Explorer, filter by the `genkit/feature` attribute to find traces for a specific flow. Root spans carry `genkit/isRoot: true`.
+  </Step>
+  <Step title="Inspect model calls">
+    Expand a trace to see child spans. Spans with `genkit/metadata/subtype: model` represent model calls. They include the model name (`genkit/model`) and — if `disableLoggingInputAndOutput` is `false` — the prompt and response.
+  </Step>
+  <Step title="View logs">
+    Open [Cloud Logging](https://console.cloud.google.com/logs) and filter by `logName: genkit_log`. Log entries are linked to their parent trace via the `logging.googleapis.com/trace` field.
+  </Step>
+</Steps>
+
+## Span attributes reference
+
+The following `genkit:*` attributes are set on every span and normalised to `genkit/*` before export:
+
+| Attribute | Description |
+|-----------|-------------|
+| `genkit/type` | Span type: `flow`, `action`, `model`, `tool`, `flowStep` |
+| `genkit/name` | Action or flow name |
+| `genkit/path` | Full call path, e.g. `/myFlow/googleai/gemini-2.0-flash` |
+| `genkit/isRoot` | `true` for the outermost flow span |
+| `genkit/state` | `success` or `error` |
+| `genkit/feature` | Feature name (set on root spans) |
+| `genkit/model` | Model name (set on model spans) |
+| `genkit/input` | Flow or model input (redacted during export) |
+| `genkit/output` | Flow or model output (redacted during export) |
+
+## Structured logging
+
+The `@genkit-ai/google-cloud` plugin replaces the default logger with a Winston-based logger that:
+
+- Emits structured JSON to Cloud Logging (`logName: genkit_log`).
+- Attaches `logging.googleapis.com/trace`, `trace_sampled`, and `spanId` fields so log entries are correlated with traces in Cloud Trace.
+- Uses Pino and Winston OpenTelemetry instrumentations when `autoInstrumentation: true`.
+
+```typescript
+import { logger } from 'genkit/logging';
+
+logger.info('Processing request', { userId: 'u123' });
+logger.warn('Rate limit approaching', { remaining: 10 });
+logger.error('Model call failed', { model: 'gemini-2.0-flash', err });
+```
+
+## Production monitoring best practices
+
+<CardGroup cols={2}>
+  <Card title="Sample traces" icon="filter">
+    Use `TraceIdRatioBasedSampler` at 10–20 % to control costs while retaining statistical signal. Always sample errors (`ParentBasedSampler` with an error filter).
+  </Card>
+  <Card title="Set up alerting" icon="bell">
+    Create Cloud Monitoring alerting policies on:
+    - `genkit/feature/requests/count` with `genkit/status != success`
+    - `genkit/generate/requests/count` with high latency
+    - Error rate above a threshold
+  </Card>
+  <Card title="Redact sensitive data" icon="shield">
+    Set `disableLoggingInputAndOutput: true` (or leave at default) for flows that handle PII, financial data, or other sensitive information. Review what gets exported before enabling full input/output logging.
+  </Card>
+  <Card title="Flush before exit" icon="cloud-arrow-up">
+    For short-lived processes or Cloud Functions, flush pending spans before returning. The Go plugin calls `googlecloud.FlushMetrics(ctx)`. In Node.js the `BatchSpanProcessor` flushes on `SIGTERM`.
+  </Card>
+</CardGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Deploy to Firebase" icon="fire" href="/deployment/firebase">
+    Firebase deployment guide with telemetry wiring.
+  </Card>
+  <Card title="Deploy to Cloud Run" icon="cloud" href="/deployment/cloud-run">
+    Cloud Run deployment guide.
+  </Card>
+  <Card title="Plugins overview" icon="plug" href="/plugins/overview">
+    Explore all official Genkit plugins.
+  </Card>
+</CardGroup>

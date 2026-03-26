@@ -1,0 +1,306 @@
+---
+title: "Prompts"
+description: "Dotprompt: version-controlled prompt files with model config, input schemas, and Handlebars templates."
+---
+
+Genkit ships with **Dotprompt**—a file format for defining prompts outside of application code. Prompt files combine YAML frontmatter (model config, input/output schemas) with [Handlebars](https://handlebarsjs.com) templates. Because prompts live in `.prompt` files, they can be version-controlled, reviewed, and edited independently of code.
+
+## Anatomy of a `.prompt` file
+
+```handlebars
+---
+model: googleai/gemini-2.5-flash
+config:
+  temperature: 0.9
+  maxOutputTokens: 1024
+input:
+  schema:
+    productName: string
+    audience: string
+    tone?: string
+output:
+  schema:
+    headline: string
+    body: string
+    callToAction: string
+---
+
+You are a copywriter specializing in {{tone, default: "professional"}} marketing copy.
+
+Write advertising copy for **{{productName}}** aimed at {{audience}}.
+
+Return JSON matching the output schema.
+```
+
+Save this file as `prompts/writeCopy.prompt`. Genkit loads all `.prompt` files from the `prompts/` directory (configurable) at startup.
+
+## Loading and calling a prompt
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    import { genkit } from 'genkit';
+    import { googleAI } from '@genkit-ai/google-genai';
+
+    const ai = genkit({
+      plugins: [googleAI()],
+      promptDir: './prompts', // default — can be omitted
+    });
+
+    // Load the prompt (async; reads from the prompts directory)
+    const writeCopy = ai.prompt('writeCopy');
+
+    // Call it like a function
+    const response = await writeCopy({
+      productName: 'Genkit',
+      audience: 'TypeScript developers',
+      tone: 'enthusiastic',
+    });
+
+    console.log(response.output);
+    // { headline: '...', body: '...', callToAction: '...' }
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    g := genkit.Init(ctx,
+        genkit.WithPlugins(&googlegenai.GoogleAI{}),
+        genkit.WithPromptDir("./prompts"),
+    )
+
+    // Look up the loaded prompt
+    writeCopy := genkit.LookupPrompt(g, "writeCopy")
+    if writeCopy == nil {
+        log.Fatal("prompt not found")
+    }
+
+    // Execute with input
+    resp, err := writeCopy.Execute(ctx,
+        ai.WithInput(map[string]any{
+            "productName": "Genkit",
+            "audience":    "Go developers",
+            "tone":        "enthusiastic",
+        }),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println(resp.Text())
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from genkit import Genkit
+    from genkit.plugins.google_genai import GoogleAI
+
+    ai = Genkit(
+        plugins=[GoogleAI()],
+        prompt_dir='./prompts',  # default — can be omitted
+    )
+
+    write_copy = ai.prompt('writeCopy')
+
+    response = await write_copy({
+        'productName': 'Genkit',
+        'audience': 'Python developers',
+        'tone': 'enthusiastic',
+    })
+    print(response.output)
+    ```
+  </Tab>
+</Tabs>
+
+## Defining prompts in code with `definePrompt()`
+
+For prompts that are simpler to keep in code, or when you need programmatic control over the message structure, use `ai.definePrompt()`:
+
+```ts
+const greetUser = ai.definePrompt(
+  {
+    name: 'greetUser',
+    model: 'googleai/gemini-2.5-flash',
+    input: {
+      schema: z.object({ name: z.string() }),
+    },
+    config: { temperature: 1 },
+    // Handlebars template inline
+    messages: 'Hello {{name}}! Tell me an interesting fact about the name "{{name}}".',
+  },
+);
+
+const { text } = await greetUser({ name: 'Genkit' });
+```
+
+You can also pass a function for full control over the message list:
+
+```ts
+const classifyIntent = ai.definePrompt(
+  {
+    name: 'classifyIntent',
+    model: 'googleai/gemini-2.5-flash',
+    input: { schema: z.object({ utterance: z.string() }) },
+    output: {
+      schema: z.object({
+        intent: z.enum(['greeting', 'question', 'complaint', 'other']),
+      }),
+    },
+  },
+  async (input) => ({
+    messages: [
+      {
+        role: 'system',
+        content: [{ text: 'Classify the intent of the following utterance.' }],
+      },
+      {
+        role: 'user',
+        content: [{ text: input.utterance }],
+      },
+    ],
+  })
+);
+```
+
+## Prompt variants
+
+Variants let you maintain alternate versions of a prompt—for A/B testing, different locales, or model-specific tuning—without duplicating the base file.
+
+Create a variant by naming the file `<promptName>.<variant>.prompt`:
+
+```
+prompts/
+  writeCopy.prompt          ← base version
+  writeCopy.concise.prompt  ← concise variant
+  writeCopy.formal.prompt   ← formal variant
+```
+
+Load a variant by passing the `variant` option:
+
+```ts
+const conciseCopy = ai.prompt('writeCopy', { variant: 'concise' });
+const response = await conciseCopy({ productName: 'Genkit', audience: 'engineers' });
+```
+
+## Frontmatter reference
+
+The YAML frontmatter supports the following fields:
+
+| Field | Description |
+|-------|-------------|
+| `model` | Model string or ref (e.g., `googleai/gemini-2.5-flash`). |
+| `config` | Model configuration: `temperature`, `topP`, `maxOutputTokens`, etc. |
+| `input.schema` | Picoschema or JSON Schema for the prompt's input variables. |
+| `output.schema` | Schema the model's response must conform to. |
+| `output.format` | Output format: `json`, `text`, `media`. |
+| `tools` | List of tool names the model may call. |
+| `system` | System prompt (Handlebars template). |
+
+### Picoschema
+
+The `input.schema` field supports a compact schema syntax called **Picoschema**:
+
+```yaml
+input:
+  schema:
+    name: string, The user's name
+    age?: integer, Optional age
+    tags(array, List of tags): string
+```
+
+Append `?` to mark a field optional. Use `(type, description)` for complex types.
+
+## Multi-message prompts
+
+To define multiple messages (system + user) in a `.prompt` file, use `{{role}}` helpers:
+
+```handlebars
+---
+model: googleai/gemini-2.5-flash
+input:
+  schema:
+    userMessage: string
+---
+
+{{#system}}
+You are a helpful assistant that responds only in haiku.
+{{/system}}
+
+{{#user}}
+{{userMessage}}
+{{/user}}
+```
+
+## Configuring the prompt directory
+
+Change the directory where Genkit looks for `.prompt` files:
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    const ai = genkit({
+      plugins: [...],
+      promptDir: './src/prompts', // relative to CWD
+    });
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    g := genkit.Init(ctx,
+        genkit.WithPromptDir("./src/prompts"),
+    )
+    ```
+
+    To embed prompts into your binary:
+
+    ```go
+    //go:embed prompts/*
+    var promptsFS embed.FS
+
+    g := genkit.Init(ctx,
+        genkit.WithPromptFS(promptsFS),
+        genkit.WithPromptDir("prompts"),
+    )
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    ai = Genkit(
+        plugins=[...],
+        prompt_dir='./src/prompts',
+    )
+    ```
+  </Tab>
+</Tabs>
+
+<Tip>
+  Set `promptDir` to `null` in TypeScript (or omit `WithPromptDir` in Go) to disable automatic prompt loading entirely.
+</Tip>
+
+## Rendering a prompt without executing it
+
+Sometimes you want to inspect the final `GenerateOptions` that a prompt would produce—for debugging or to inject additional parameters before calling the model:
+
+```ts
+const options = await writeCopy.render({
+  productName: 'Genkit',
+  audience: 'developers',
+});
+// options is a GenerateOptions object — inspect or modify before passing to ai.generate()
+const response = await ai.generate(options);
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Tools" href="/concepts/tools">
+    Reference tools by name from inside prompt files.
+  </Card>
+  <Card title="Models" href="/concepts/models">
+    Learn all available model config options.
+  </Card>
+  <Card title="Structured Output" href="/guides/structured-output">
+    Enforce JSON output schemas on prompt responses.
+  </Card>
+  <Card title="Dev Tools" href="/guides/devtools">
+    Test and iterate on prompts in the Dev UI.
+  </Card>
+</CardGroup>

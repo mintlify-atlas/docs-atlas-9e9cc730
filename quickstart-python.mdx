@@ -1,0 +1,211 @@
+---
+title: "Python quickstart (Alpha)"
+description: "Get up and running with Genkit in Python. The Python SDK is currently in alpha — core generation, flows, and tools are functional but APIs may change."
+---
+
+<Warning>
+The Genkit Python SDK is in **alpha**. Core functionality — text generation, flows, tools, and structured output — is available and works, but APIs are subject to change before the stable release. Production use is not yet recommended.
+</Warning>
+
+This guide walks you through installing Genkit for Python, writing your first AI-powered async function, and exploring it with the local Developer UI.
+
+<Steps>
+
+<Step title="Get a Google AI API key">
+
+Genkit's Google AI plugin uses the Gemini API. Get a free API key from [Google AI Studio](https://aistudio.google.com/apikey).
+
+<Note>
+Set the key as an environment variable before running any Genkit code:
+
+```bash
+export GOOGLE_GENAI_API_KEY="your-api-key"
+```
+
+The `GoogleAI` plugin also accepts `GEMINI_API_KEY`. You can pass the key explicitly as `GoogleAI(api_key='...')`, but using an environment variable keeps credentials out of source control.
+</Note>
+
+</Step>
+
+<Step title="Install dependencies">
+
+Install the Genkit core package and the Google AI plugin:
+
+<CodeGroup>
+
+```bash pip
+pip install genkit genkit-google-genai
+```
+
+```bash uv
+uv add genkit genkit-google-genai
+```
+
+</CodeGroup>
+
+Install the Genkit CLI to use the Developer UI:
+
+```bash
+npm install -g genkit-cli
+```
+
+<Note>
+The Genkit CLI is distributed via npm regardless of the language you use for your app. Node.js 18+ is required only for the CLI and Developer UI — your Python application does not depend on Node.
+</Note>
+
+</Step>
+
+<Step title="Write your first Genkit app">
+
+Create `main.py`:
+
+```python
+import asyncio
+
+from genkit import Genkit
+from genkit.plugins.google_genai import GoogleAI
+
+# Initialize Genkit with the Google AI plugin.
+# The plugin reads GOOGLE_GENAI_API_KEY (or GEMINI_API_KEY) from the environment.
+ai = Genkit(
+    plugins=[GoogleAI()],
+    model='googleai/gemini-2.5-flash',
+)
+
+
+# Define a flow — a traced, deployable AI function.
+@ai.flow()
+async def tell_joke(topic: str) -> str:
+    """Generate a short joke about the given topic."""
+    response = await ai.generate(
+        prompt=f'Tell me a short joke about {topic}.',
+    )
+    return response.text
+
+
+async def main() -> None:
+    joke = await tell_joke('software engineers')
+    print(joke)
+
+
+if __name__ == '__main__':
+    ai.run_main(main())
+```
+
+Run the app:
+
+```bash
+python main.py
+```
+
+</Step>
+
+<Step title="Explore with the Developer UI">
+
+The Genkit CLI wraps your app with tracing and launches a local Developer UI where you can run flows interactively and inspect execution traces.
+
+```bash
+genkit start -- python main.py
+```
+
+This starts your app, then opens the Developer UI at `http://localhost:4000`. From there you can:
+
+- **Run** the `tell_joke` flow against any input without restarting your app.
+- **Inspect traces** to see the full prompt and response exchanged with Gemini.
+- **Compare models** by switching between available Gemini variants in real time.
+
+<Tip>
+Set `GENKIT_ENV=dev` in your environment to keep the reflection server running even when started outside the `genkit start` command.
+</Tip>
+
+</Step>
+
+<Step title="Add structured output (optional)">
+
+Pass a Pydantic `BaseModel` as the output schema and Genkit will validate the model's response for you:
+
+```python
+from pydantic import BaseModel
+
+
+class Recipe(BaseModel):
+    title: str
+    ingredients: list[str]
+    steps: list[str]
+
+
+@ai.flow()
+async def generate_recipe(dish: str) -> Recipe:
+    """Generate a recipe for the given dish."""
+    response = await ai.generate(
+        prompt=f'Create a recipe for {dish}.',
+        output_schema=Recipe,
+    )
+    return response.output
+
+
+async def main() -> None:
+    recipe = await generate_recipe('chocolate chip cookies')
+    print(recipe.title)
+    print(recipe.ingredients)
+```
+
+</Step>
+
+<Step title="Define tools (optional)">
+
+Tools let the model call Python functions to access real-time data or take actions:
+
+```python
+import httpx
+
+
+@ai.tool()
+async def get_weather(city: str) -> str:
+    """Return the current weather for a city."""
+    # Replace with a real weather API call.
+    return f'The weather in {city} is 72°F and sunny.'
+
+
+@ai.flow()
+async def weather_chat(question: str) -> str:
+    """Answer weather questions using the get_weather tool."""
+    response = await ai.generate(
+        prompt=question,
+        tools=['get_weather'],
+    )
+    return response.text
+```
+
+</Step>
+
+</Steps>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Concepts: Flows" icon="arrows-split-up-and-left" href="/concepts/flows">
+    Learn how flows add observability, retries, and HTTP exposure to any AI function.
+  </Card>
+  <Card title="Concepts: Models" icon="microchip" href="/concepts/models">
+    Understand model references, config options, multimodal inputs, and streaming.
+  </Card>
+  <Card title="Concepts: Tools" icon="wrench" href="/concepts/tools">
+    Let models call Python functions to fetch data, take actions, and more.
+  </Card>
+  <Card title="Guides: Structured output" icon="brackets-curly" href="/guides/structured-output">
+    Return validated Pydantic models from any generation call.
+  </Card>
+  <Card title="Guides: Streaming" icon="wave-square" href="/guides/streaming">
+    Stream tokens as they arrive with `ai.generate_stream()`.
+  </Card>
+  <Card title="Plugins: Google AI" icon="google" href="/plugins/google-genai">
+    Full reference for the `genkit-google-genai` plugin including Vertex AI and embeddings.
+  </Card>
+  <Card title="Plugins overview" icon="puzzle-piece" href="/plugins/overview">
+    Browse available plugins: Vertex AI, Ollama, Anthropic, Firebase, and more.
+  </Card>
+  <Card title="Developer tools" icon="terminal" href="/guides/devtools">
+    Deep dive into the Genkit CLI and Developer UI.
+  </Card>
+</CardGroup>

@@ -1,0 +1,387 @@
+---
+title: "Writing plugins"
+description: "Build custom Genkit plugins that register models, embedders, retrievers, or any other action type. Learn the plugin lifecycle and how to publish to npm."
+---
+
+A Genkit plugin is a reusable unit of functionality that registers one or more **actions** — models, embedders, retrievers, indexers, evaluators, or tools — into the Genkit registry. Plugins are the right abstraction when you want to:
+
+- Wrap an external model API (e.g. a third-party provider or an internal service)
+- Bundle related capabilities (model + embedder + retriever from the same provider)
+- Distribute a reusable integration as an npm/PyPI package
+
+If you need a single model for your own app, calling `ai.defineModel()` directly is simpler and you don't need a plugin.
+
+## Plugin interfaces by language
+
+<Tabs>
+  <Tab title="TypeScript (v2 API)">
+    The current interface is `GenkitPluginV2`, created with `genkitPluginV2` from `genkit/plugin`:
+
+    ```ts
+    // genkit/js/genkit/src/plugin.ts
+    export interface GenkitPluginV2 {
+      version: 'v2';
+      name: string;
+
+      // Pre-register actions at startup (returned array is registered immediately)
+      init?: () => ResolvableAction[] | Promise<ResolvableAction[]>;
+
+      // On-demand action materialisation
+      resolve?: (
+        actionType: ActionType,
+        name: string
+      ) => ResolvableAction | undefined | Promise<ResolvableAction | undefined>;
+
+      // Enumerate available actions for the Dev UI
+      list?: () => ActionMetadata[] | Promise<ActionMetadata[]>;
+    }
+    ```
+
+    The older `genkitPlugin` helper (wraps a `Genkit` instance) is still used by some plugins but `genkitPluginV2` is preferred for new work.
+  </Tab>
+  <Tab title="Go">
+    In Go, plugins implement the `api.Plugin` interface from `github.com/firebase/genkit/go/core/api`:
+
+    ```go
+    type Plugin interface {
+        Name() string
+        Init(ctx context.Context) []Action
+    }
+    ```
+
+    `Init` is called exactly once by `genkit.Init`. Return the actions you want pre-registered; additional actions can be created later with `genkit.DefineModel` or `genkit.DefineEmbedder`.
+  </Tab>
+  <Tab title="Python">
+    Python plugins extend the abstract `Plugin` base class from `genkit._core.plugin`:
+
+    ```python
+    # genkit/py/plugins/README.md — Plugin abstract interface
+    class Plugin(ABC):
+        name: str  # Plugin namespace, e.g. 'googleai'
+
+        async def init(self) -> list[Action]:
+            """One-time setup. Called lazily on first use. Return pre-registered actions."""
+            ...
+
+        async def resolve(self, kind: ActionKind, name: str) -> Action | None:
+            """Materialise a single action by kind and name. Called on each action lookup."""
+            ...
+
+        async def list_actions(self) -> list[ActionMetadata]:
+            """Advertise available actions for the Dev UI. Must be fast."""
+            ...
+    ```
+  </Tab>
+</Tabs>
+
+## Plugin lifecycle
+
+```
+  ai = genkit({ plugins: [myPlugin()] })   ← Phase 1: REGISTER
+       │
+       ▼
+  registry stores plugin (not yet initialised)
+       │
+       ⋮  (later, on first use)
+       │
+  await ai.generate({ model: 'myplugin/my-model', ... })
+       │
+       ▼
+  registry._ensureInitialised()             ← Phase 2: LAZY INIT
+       │
+       ▼
+  actions = await plugin.init()             (called exactly once)
+  registry.registerAll(actions)
+       │
+       ▼
+  await plugin.resolve('model', 'myplugin/my-model')  ← Phase 3: RESOLVE
+       │
+       ▼
+  Action cached in registry                 (subsequent lookups skip init)
+```
+
+## Minimal plugin example
+
+The following TypeScript example creates a plugin that registers a custom text-generation model:
+
+```ts
+import { genkit, z } from 'genkit';
+import {
+  genkitPluginV2,
+  model as pluginModel,
+  type GenkitPluginV2,
+  type ResolvableAction,
+} from 'genkit/plugin';
+import { modelRef } from 'genkit/model';
+
+// ── 1. Describe the model ────────────────────────────────────────────────────
+
+const MyModelConfigSchema = z.object({
+  temperature: z.number().min(0).max(1).optional(),
+  maxTokens: z.number().int().positive().optional(),
+});
+
+export const myModel = modelRef({
+  name: 'myprovider/my-model',
+  configSchema: MyModelConfigSchema,
+  info: {
+    label: 'My Provider - My Model',
+    supports: {
+      multiturn: true,
+      media: false,
+      tools: false,
+      systemRole: true,
+      constrained: 'no-tools',
+      output: ['text', 'json'],
+    },
+  },
+});
+
+// ── 2. Define the model action ───────────────────────────────────────────────
+
+function defineMyModel(apiKey: string) {
+  return pluginModel(
+    {
+      name: myModel.name,
+      ...myModel.info,
+      configSchema: myModel.configSchema,
+    },
+    async (request, { sendChunk, streamingRequested }) => {
+      // Build the prompt from Genkit's normalised message format
+      const lastMessage = request.messages.at(-1)!;
+      const prompt = lastMessage.content
+        .filter(p => p.text)
+        .map(p => p.text)
+        .join('');
+
+      // Call your external API here
+      const raw = await callMyProviderAPI(apiKey, prompt, request.config);
+
+      return {
+        candidates: [{
+          index: 0,
+          finishReason: 'stop',
+          message: { role: 'model', content: [{ text: raw.text }] },
+        }],
+        usage: {
+          inputTokens: raw.inputTokens,
+          outputTokens: raw.outputTokens,
+        },
+      };
+    }
+  );
+}
+
+// ── 3. Wrap in a plugin ──────────────────────────────────────────────────────
+
+export interface MyPluginOptions {
+  apiKey?: string;
+}
+
+export function myPlugin(options?: MyPluginOptions): GenkitPluginV2 {
+  const apiKey = options?.apiKey ?? process.env.MY_PROVIDER_API_KEY ?? '';
+
+  return genkitPluginV2({
+    name: 'myprovider',
+
+    // Pre-register the known model at startup
+    init: () => [defineMyModel(apiKey)],
+
+    // Resolve any model by name (for dynamic/versioned models)
+    resolve: async (actionType, name) => {
+      if (actionType === 'model') {
+        return defineMyModel(apiKey);
+      }
+      return undefined;
+    },
+
+    // List available actions for the Dev UI
+    list: async () => [{
+      name: myModel.name,
+      actionType: 'model',
+      info: myModel.info,
+      configSchema: myModel.configSchema,
+    }],
+  });
+}
+
+// ── 4. Use the plugin ────────────────────────────────────────────────────────
+
+const ai = genkit({ plugins: [myPlugin()] });
+
+const { text } = await ai.generate({
+  model: myModel,
+  prompt: 'Hello from my plugin!',
+});
+```
+
+## Python plugin example
+
+```python
+from genkit.plugin_api import (
+    Action, ActionKind, ActionMetadata, Plugin, to_json_schema
+)
+from genkit.model import model_action_metadata
+from pydantic import BaseModel
+from typing import Optional
+import httpx
+
+class MyModelConfig(BaseModel):
+    temperature: Optional[float] = 0.7
+    max_tokens: Optional[int] = 1024
+
+
+class MyPlugin(Plugin):
+    name = 'myprovider'
+
+    def __init__(self, api_key: str | None = None) -> None:
+        import os
+        self._api_key = api_key or os.environ.get('MY_PROVIDER_API_KEY', '')
+
+    async def init(self) -> list[Action]:
+        """Called once on first use. Pre-register known actions."""
+        return [self._make_model_action('myprovider/my-model')]
+
+    async def resolve(self, kind: ActionKind, name: str) -> Action | None:
+        """Called on every lookup — materialise the action on demand."""
+        if kind == ActionKind.MODEL:
+            return self._make_model_action(name)
+        return None
+
+    async def list_actions(self) -> list[ActionMetadata]:
+        """Advertise models to the Dev UI. Keep this fast."""
+        return [
+            model_action_metadata(
+                name='myprovider/my-model',
+                config_schema=MyModelConfig,
+                info={'label': 'My Provider - My Model', 'multiturn': True},
+            )
+        ]
+
+    def _make_model_action(self, name: str) -> Action:
+        api_key = self._api_key
+
+        async def _generate(request, ctx):
+            prompt = request.messages[-1].content[0].text
+            async with httpx.AsyncClient() as client:
+                r = await client.post(
+                    'https://api.myprovider.com/generate',
+                    json={'prompt': prompt},
+                    headers={'Authorization': f'Bearer {api_key}'},
+                )
+            text = r.json()['text']
+            from genkit._core._model import ModelResponse, Message, Part
+            return ModelResponse(
+                message=Message(role='model', content=[Part(text=text)])
+            )
+
+        return Action(
+            kind=ActionKind.MODEL,
+            name=name,
+            fn=_generate,
+            metadata=model_action_metadata(
+                name=name,
+                config_schema=MyModelConfig,
+                info={'label': name, 'multiturn': True},
+            ).metadata,
+        )
+```
+
+## When to write a plugin vs. `defineModel` directly
+
+| Scenario | Recommendation |
+|----------|----------------|
+| You need one model in your own app | Use `ai.defineModel()` directly — no plugin needed. |
+| You're wrapping a provider with multiple models/embedders | Write a plugin so consumers configure it once. |
+| You want to share your integration with others | Write a plugin and publish to npm or PyPI. |
+| You need lazy initialisation (expensive client setup) | Use a plugin — `init()` is only called on first use. |
+| You need dynamic model discovery (API returns model list) | Use a plugin with `resolve()` + `list()`. |
+
+## Publishing to npm
+
+<Steps>
+  <Step title="Scaffold the package">
+    ```bash
+    mkdir genkit-my-plugin && cd genkit-my-plugin
+    npm init -y
+    ```
+  </Step>
+  <Step title="Add peer dependencies">
+    ```json
+    // package.json
+    {
+      "name": "genkitx-my-plugin",
+      "version": "0.1.0",
+      "peerDependencies": {
+        "genkit": "^1.0.0"
+      },
+      "devDependencies": {
+        "genkit": "^1.0.0",
+        "typescript": "^5.0.0"
+      }
+    }
+    ```
+
+    The community naming convention is `genkitx-<provider>` for unofficial plugins.
+  </Step>
+  <Step title="Export from index.ts">
+    ```ts
+    // src/index.ts
+    export { myPlugin, myModel, type MyPluginOptions } from './plugin.js';
+    ```
+  </Step>
+  <Step title="Build and publish">
+    ```bash
+    npm run build
+    npm publish --access public
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+Look at the source of `@genkit-ai/ollama` or `@genkit-ai/firebase` for real-world plugin patterns — both are relatively compact and show the full lifecycle including model definition, resolver, and list functions.
+</Tip>
+
+## Registering other action types
+
+Plugins can register any Genkit action, not just models:
+
+```ts
+import { embedder } from 'genkit/plugin';
+import { retriever } from 'genkit/plugin';
+
+// Define an embedder
+const myEmbedder = embedder(
+  { name: 'myprovider/embedder', configSchema: EmbedConfigSchema, info: { dimensions: 1536 } },
+  async (request) => {
+    const vectors = await callEmbedAPI(request.input);
+    return { embeddings: vectors.map(v => ({ embedding: v })) };
+  }
+);
+
+// Define a retriever (for RAG)
+const myRetriever = ai.defineRetriever(
+  { name: 'myprovider/retriever' },
+  async (query, options) => {
+    const docs = await searchMyVectorDB(query.text(), options?.limit ?? 10);
+    return { documents: docs };
+  }
+);
+```
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Plugins overview" href="/plugins/overview">
+    All official and community plugins at a glance.
+  </Card>
+  <Card title="Models" href="/concepts/models">
+    How Genkit models, requests, and responses are structured.
+  </Card>
+  <Card title="RAG guide" href="/concepts/rag">
+    Define retrievers and indexers for your knowledge base.
+  </Card>
+  <Card title="Dev tools" href="/guides/devtools">
+    Inspect your plugin's registered actions in the Genkit Dev UI.
+  </Card>
+</CardGroup>

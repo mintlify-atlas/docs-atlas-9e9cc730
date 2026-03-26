@@ -1,0 +1,100 @@
+{
+  "projectType": "framework",
+  "projectName": "Genkit",
+  "projectDescription": "An open-source framework by Google/Firebase for building production-ready AI-powered applications in JavaScript/TypeScript, Go, and Python, with a unified plugin system, type-safe flows, and built-in observability.",
+  "theme": "palm",
+  "primaryColor": "#8c9494",
+  "lightColor": "#26272f",
+  "darkColor": "#e0e0e2",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart-js",
+              "quickstart-go",
+              "quickstart-python"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/flows",
+              "concepts/models",
+              "concepts/tools",
+              "concepts/prompts",
+              "concepts/rag",
+              "concepts/sessions"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/structured-output",
+              "guides/streaming",
+              "guides/multimodal",
+              "guides/agents",
+              "guides/evaluation",
+              "guides/devtools"
+            ]
+          },
+          {
+            "group": "Plugins",
+            "pages": [
+              "plugins/overview",
+              "plugins/google-genai",
+              "plugins/vertex-ai",
+              "plugins/ollama",
+              "plugins/firebase",
+              "plugins/writing-plugins"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/overview",
+              "deployment/firebase",
+              "deployment/cloud-run",
+              "deployment/observability"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Unified AI model interface supporting Google Gemini, Anthropic Claude, OpenAI-compatible models, Ollama, and more",
+    "Type-safe flows with automatic input/output schema validation using Zod (JS) or Pydantic (Python)",
+    "Agentic tool calling with automatic multi-turn reasoning loops",
+    "RAG (Retrieval-Augmented Generation) with built-in embedder and retriever abstractions",
+    "Dotprompt — YAML-frontmatter + Handlebars prompt file format with versioning and variants",
+    "Local Developer UI and CLI for testing, inspecting traces, and running evaluations",
+    "OpenTelemetry-based tracing and production monitoring via Google Cloud or third-party backends",
+    "Plugin system for extending models, telemetry, vector stores, and integrations",
+    "Multi-language support: JavaScript/TypeScript (stable), Go (stable), Python (alpha)",
+    "Model Context Protocol (MCP) support for dynamic tool discovery"
+  ],
+  "publicApiSurface": [
+    "genkit() / Genkit constructor — JS/TS entry point",
+    "genkit.Init() — Go entry point",
+    "Genkit() — Python entry point",
+    "ai.generate() — text/multimodal generation",
+    "ai.generateStream() — streaming generation",
+    "ai.defineFlow() / @ai.flow() — define typed flows",
+    "ai.defineTool() / @ai.tool() — define callable tools",
+    "ai.definePrompt() / ai.prompt() — manage prompts and dotprompt files",
+    "ai.embed() / ai.retrieve() / ai.index() — RAG pipeline primitives",
+    "ai.defineEmbedder() / ai.defineRetriever() / ai.defineIndexer() — custom RAG components",
+    "ai.defineModel() — custom model definitions",
+    "ai.defineEvaluator() — custom evaluators",
+    "ai.startFlowServer() / create_flows_asgi_app() — HTTP flow server",
+    "GenkitOptions { plugins, model, promptDir, context } — initialization config",
+    "@genkit-ai/google-genai, @genkit-ai/vertexai, @genkit-ai/ollama — official JS plugins",
+    "github.com/firebase/genkit/go/plugins/* — official Go plugins",
+    "genkit.plugins.google_genai, genkit.plugins.anthropic — official Python plugins"
+  ]
+}

@@ -1,0 +1,317 @@
+---
+title: "Models"
+description: "A unified interface to call any AI model—Gemini, Claude, Llama, and more—with the same API."
+---
+
+Genkit provides a single `generate()` API that works with any supported model provider. Swap models by changing a single string; the rest of your code stays the same.
+
+## Basic generation
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    import { genkit } from 'genkit';
+    import { googleAI } from '@genkit-ai/google-genai';
+
+    const ai = genkit({
+      plugins: [googleAI()],
+    });
+
+    const response = await ai.generate({
+      model: 'googleai/gemini-2.5-flash',
+      prompt: 'Why is the sky blue?',
+    });
+
+    console.log(response.text);
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    package main
+
+    import (
+        "context"
+        "fmt"
+        "log"
+
+        "github.com/firebase/genkit/go/ai"
+        "github.com/firebase/genkit/go/genkit"
+        "github.com/firebase/genkit/go/plugins/googlegenai"
+    )
+
+    func main() {
+        ctx := context.Background()
+        g := genkit.Init(ctx,
+            genkit.WithPlugins(&googlegenai.GoogleAI{}),
+        )
+
+        resp, err := genkit.Generate(ctx, g,
+            ai.WithModel("googleai/gemini-2.5-flash"),
+            ai.WithPrompt("Why is the sky blue?"),
+        )
+        if err != nil {
+            log.Fatal(err)
+        }
+        fmt.Println(resp.Text())
+    }
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from genkit import Genkit
+    from genkit.plugins.google_genai import GoogleAI
+
+    ai = Genkit(plugins=[GoogleAI()])
+
+    response = await ai.generate(
+        model='googleai/gemini-2.5-flash',
+        prompt='Why is the sky blue?',
+    )
+    print(response.text)
+    ```
+  </Tab>
+</Tabs>
+
+## Specifying a model
+
+Models are identified by a namespaced string: `"<plugin>/<model-name>"`. You can also set a **default model** on the `genkit` instance so you don't have to repeat it on every call.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    // As a string reference
+    await ai.generate({ model: 'googleai/gemini-2.5-flash', prompt: 'Hello' });
+
+    // As a modelRef (enables TypeScript-typed config)
+    import { googleAI } from '@genkit-ai/google-genai';
+    await ai.generate({
+      model: googleAI.model('gemini-2.5-flash'),
+      prompt: 'Hello',
+    });
+
+    // Using the default model (set at initialization)
+    const ai = genkit({
+      plugins: [googleAI()],
+      model: 'googleai/gemini-2.5-flash', // default
+    });
+    await ai.generate('Hello'); // uses the default
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // As a string via WithModel
+    genkit.Generate(ctx, g, ai.WithModel("googleai/gemini-2.5-flash"), ...)
+
+    // Using the default model set during Init
+    g := genkit.Init(ctx,
+        genkit.WithPlugins(&googlegenai.GoogleAI{}),
+        genkit.WithDefaultModel("googleai/gemini-2.5-flash"),
+    )
+    genkit.GenerateText(ctx, g, ai.WithPrompt("Hello")) // uses default
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from genkit.plugins.google_genai import GoogleAI
+
+    # As a string reference
+    await ai.generate(model='googleai/gemini-2.5-flash', prompt='Hello')
+
+    # Using the default model
+    ai = Genkit(plugins=[GoogleAI()], model='googleai/gemini-2.5-flash')
+    await ai.generate(prompt='Hello')  # uses default
+    ```
+  </Tab>
+</Tabs>
+
+## `generate()` options
+
+The full set of options available on `ai.generate()`:
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `model` | string \| ModelRef | Model to use. Overrides the default. |
+| `prompt` | string \| Part \| Part[] | The user prompt. |
+| `system` | string \| Part \| Part[] | System instructions (persona, constraints, etc.). |
+| `messages` | MessageData[] | Conversation history for multi-turn prompting. |
+| `tools` | ToolArgument[] | Tools/functions the model may call. |
+| `toolChoice` | `'auto'` \| `'required'` \| `'none'` | How the model should use tools. |
+| `config` | object | Model-specific configuration (temperature, topP, etc.). |
+| `output` | OutputOptions | Desired output format (JSON schema, structured output). |
+| `docs` | DocumentData[] | Retrieved documents to inject as context (RAG). |
+
+## Working with the response
+
+`ai.generate()` returns a `GenerateResponse` with several useful accessors:
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    const response = await ai.generate({
+      model: 'googleai/gemini-2.5-flash',
+      prompt: 'List the planets in order from the sun.',
+      output: {
+        schema: z.object({
+          planets: z.array(z.string()),
+        }),
+      },
+    });
+
+    // Plain text of the first candidate
+    console.log(response.text);
+
+    // Parsed structured output (typed against the output schema)
+    console.log(response.output); // { planets: ['Mercury', 'Venus', ...] }
+
+    // All candidate messages
+    console.log(response.candidates);
+
+    // Token usage
+    console.log(response.usage);
+    // { inputTokens: 12, outputTokens: 28, totalTokens: 40 }
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    resp, err := genkit.Generate(ctx, g,
+        ai.WithModel("googleai/gemini-2.5-flash"),
+        ai.WithPrompt("List the planets in order from the sun."),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    // Plain text
+    fmt.Println(resp.Text())
+
+    // All message content parts
+    fmt.Println(resp.Message.Content)
+
+    // Usage metadata
+    fmt.Println(resp.Usage)
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    response = await ai.generate(
+        model='googleai/gemini-2.5-flash',
+        prompt='List the planets in order from the sun.',
+    )
+
+    # Plain text
+    print(response.text)
+
+    # Structured output (when output_schema is set)
+    print(response.output)
+
+    # All candidates
+    print(response.candidates)
+
+    # Token usage
+    print(response.usage)
+    ```
+  </Tab>
+</Tabs>
+
+## System prompts
+
+Use the `system` field to set persistent instructions that shape how the model responds:
+
+```ts
+const response = await ai.generate({
+  model: 'googleai/gemini-2.5-flash',
+  system: 'You are a terse technical writer. Respond in plain text only.',
+  prompt: 'Explain what a webhook is.',
+});
+```
+
+## Multi-turn conversations
+
+Pass previous messages via `messages` to give the model conversation history:
+
+```ts
+const history = [
+  { role: 'user', content: [{ text: 'My name is Alex.' }] },
+  { role: 'model', content: [{ text: 'Nice to meet you, Alex!' }] },
+];
+
+const response = await ai.generate({
+  model: 'googleai/gemini-2.5-flash',
+  messages: history,
+  prompt: 'What is my name?',
+});
+// → "Your name is Alex."
+```
+
+<Note>
+  For stateful multi-turn conversations you don't need to manage history manually. See [Sessions](/concepts/sessions).
+</Note>
+
+## Model configuration
+
+Pass model-specific parameters through `config`. These vary by model but typically include:
+
+```ts
+const response = await ai.generate({
+  model: 'googleai/gemini-2.5-flash',
+  prompt: 'Write a haiku about autumn.',
+  config: {
+    temperature: 1.2,   // higher = more creative
+    topP: 0.95,
+    maxOutputTokens: 200,
+    stopSequences: ['\n\n'],
+  },
+});
+```
+
+## Structured output
+
+Request a structured JSON response by providing an `output.schema`. Genkit validates the model's response against the schema.
+
+```ts
+const response = await ai.generate({
+  model: 'googleai/gemini-2.5-flash',
+  prompt: 'Extract the product name, price, and category from this text: ...',
+  output: {
+    schema: z.object({
+      name: z.string(),
+      price: z.number(),
+      category: z.string(),
+    }),
+  },
+});
+
+const product = response.output; // { name: '...', price: 9.99, category: '...' }
+```
+
+See [Structured Output](/guides/structured-output) for more detail.
+
+## Model plugins
+
+Models are provided by plugins. Install and configure the plugin for the provider you want to use:
+
+| Provider | Plugin | Example model string |
+|----------|--------|---------------------|
+| Google AI (Gemini) | `@genkit-ai/google-genai` | `googleai/gemini-2.5-flash` |
+| Vertex AI | `@genkit-ai/google-genai` | `vertexai/gemini-2.5-pro` |
+| Ollama (local) | `genkitx-ollama` | `ollama/llama3.2` |
+| Anthropic | community | `anthropic/claude-3-5-sonnet` |
+
+See [Plugins](/plugins/overview) for the full list.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Structured Output" href="/guides/structured-output">
+    Force models to return typed JSON matching your schema.
+  </Card>
+  <Card title="Streaming" href="/guides/streaming">
+    Stream tokens as they are generated.
+  </Card>
+  <Card title="Multimodal" href="/guides/multimodal">
+    Send images, audio, and video to models.
+  </Card>
+  <Card title="Tools" href="/concepts/tools">
+    Let models call your functions.
+  </Card>
+</CardGroup>

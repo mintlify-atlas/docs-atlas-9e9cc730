@@ -1,0 +1,252 @@
+---
+title: "Deploy to Firebase"
+description: "Serve Genkit flows as Firebase Cloud Functions for Node.js."
+---
+
+Firebase Cloud Functions is a natural host for Genkit flows. Your flows run on demand, scale automatically, and have built-in access to other Firebase and Google Cloud services through the service account attached to the function.
+
+<Note>
+Firebase Functions supports Node.js. For Python or Go deployments see [Cloud Run](/deployment/cloud-run).
+</Note>
+
+## Prerequisites
+
+- A Firebase project with Blaze (pay-as-you-go) billing enabled.
+- Firebase CLI: `npm install -g firebase-tools`
+- Node.js 20+
+
+## Project setup
+
+<Steps>
+  <Step title="Initialize Firebase">
+    If you do not already have a Firebase project configured:
+
+    ```bash
+    firebase login
+    firebase init functions
+    ```
+
+    Choose TypeScript when prompted. This creates a `functions/` directory with `package.json`, `tsconfig.json`, and `src/index.ts`.
+  </Step>
+
+  <Step title="Install Genkit packages">
+    ```bash
+    cd functions
+    npm install genkit @genkit-ai/express @genkit-ai/firebase
+    # Add your model plugin — for example:
+    npm install @genkit-ai/google-genai
+    # or for Vertex AI (no API key needed on GCP):
+    npm install @genkit-ai/google-genai
+    ```
+  </Step>
+
+  <Step title="Write your function">
+    Edit `functions/src/index.ts`:
+
+    <CodeGroup>
+      ```typescript functions/src/index.ts (Gemini API key)
+      import { genkit } from 'genkit';
+      import { googleAI } from '@genkit-ai/google-genai';
+      import { expressHandler } from '@genkit-ai/express';
+      import * as functions from 'firebase-functions';
+      import express from 'express';
+
+      const ai = genkit({
+        plugins: [googleAI()],
+      });
+
+      const menuFlow = ai.defineFlow('menuSuggestion', async (theme: string) => {
+        const { text } = await ai.generate(
+          `Suggest a concise menu for a ${theme} restaurant.`
+        );
+        return text;
+      });
+
+      // Expose each flow as an HTTPS function
+      const app = express();
+      app.use(express.json());
+      app.post('/menuSuggestion', expressHandler(menuFlow));
+
+      export const genkit_api = functions.https.onRequest(app);
+      ```
+
+      ```typescript functions/src/index.ts (Vertex AI)
+      import { genkit } from 'genkit';
+      import { vertexAI } from '@genkit-ai/google-genai';
+      import { expressHandler } from '@genkit-ai/express';
+      import * as functions from 'firebase-functions';
+      import express from 'express';
+
+      // Vertex AI uses the Cloud Function's service account — no API key needed.
+      const ai = genkit({
+        plugins: [vertexAI({ location: 'us-central1' })],
+      });
+
+      const menuFlow = ai.defineFlow('menuSuggestion', async (theme: string) => {
+        const { text } = await ai.generate(
+          `Suggest a concise menu for a ${theme} restaurant.`
+        );
+        return text;
+      });
+
+      const app = express();
+      app.use(express.json());
+      app.post('/menuSuggestion', expressHandler(menuFlow));
+
+      export const genkit_api = functions.https.onRequest(app);
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Configure environment variables">
+    If you are using the Gemini API key model plugin, store the key in Firebase Secret Manager:
+
+    ```bash
+    firebase functions:secrets:set GOOGLE_GENAI_API_KEY
+    # Enter the key value when prompted
+    ```
+
+    Then reference the secret in your function configuration:
+
+    ```typescript
+    import { defineSecret } from 'firebase-functions/params';
+
+    const apiKey = defineSecret('GOOGLE_GENAI_API_KEY');
+
+    export const genkit_api = functions
+      .runWith({ secrets: [apiKey] })
+      .https.onRequest(app);
+    ```
+
+    <Tip>
+    Vertex AI reads credentials directly from the Cloud Function's service account via Application Default Credentials (ADC). No API key or secret is required when deploying to Firebase/GCP.
+    </Tip>
+  </Step>
+
+  <Step title="Deploy">
+    ```bash
+    firebase deploy --only functions
+    ```
+
+    After deployment the URL is printed to the console:
+
+    ```
+    Function URL (genkit_api): https://<region>-<project>.cloudfunctions.net/genkit_api
+    ```
+
+    Invoke a flow:
+
+    ```bash
+    curl -X POST \
+      https://<region>-<project>.cloudfunctions.net/genkit_api/menuSuggestion \
+      -H 'Content-Type: application/json' \
+      -d '{"data": "Italian"}'
+    ```
+  </Step>
+</Steps>
+
+## Firebase telemetry
+
+The `@genkit-ai/firebase` package provides `enableFirebaseTelemetry`, which routes traces, metrics, and structured logs to Google Cloud Observability (Cloud Trace, Cloud Monitoring, Cloud Logging) using the same pipeline as the `@genkit-ai/google-cloud` plugin.
+
+```typescript
+import { enableFirebaseTelemetry } from '@genkit-ai/firebase';
+
+// Call this once, before defining flows or starting the server.
+enableFirebaseTelemetry();
+
+const ai = genkit({ plugins: [...] });
+```
+
+See [Production monitoring and observability](/deployment/observability) for details on what is traced and how to view it.
+
+## Firestore vector search
+
+The `@genkit-ai/firebase` package exports `defineFirestoreRetriever`, which wires a Genkit retriever to Firestore's native vector-search feature (`findNearest`). Use it to build RAG flows that query documents stored in Firestore.
+
+```typescript
+import { defineFirestoreRetriever } from '@genkit-ai/firebase';
+import { getFirestore } from 'firebase-admin/firestore';
+import { initializeApp } from 'firebase-admin/app';
+
+const app = initializeApp();
+const db = getFirestore(app);
+
+const docsRetriever = defineFirestoreRetriever(ai, {
+  name: 'firestoreDocs',
+  firestore: db,
+  collection: 'documents',
+  embedder: yourEmbedder,
+  vectorField: 'embedding',
+  contentField: 'text',
+  distanceMeasure: 'COSINE',
+});
+
+// Use the retriever in a RAG flow:
+const ragFlow = ai.defineFlow('rag', async (query: string) => {
+  const docs = await ai.retrieve({
+    retriever: docsRetriever,
+    query,
+    options: { limit: 5 },
+  });
+
+  const { text } = await ai.generate({
+    prompt: `Answer using these docs:\n${docs.map(d => d.text()).join('\n')}\n\nQuestion: ${query}`,
+  });
+  return text;
+});
+```
+
+<Note>
+You must create a vector index on the embedding field in Firestore before nearest-neighbor queries will work. See the [Firestore vector search documentation](https://firebase.google.com/docs/firestore/vector-data) for index creation.
+</Note>
+
+## Durable streaming
+
+For long-running flows, use `FirestoreStreamManager` (or `RtdbStreamManager`) so that clients can disconnect and reconnect without losing stream state:
+
+```typescript
+import { expressHandler } from '@genkit-ai/express';
+import { FirestoreStreamManager } from '@genkit-ai/firebase/beta';
+import { getFirestore } from 'firebase-admin/firestore';
+import { initializeApp } from 'firebase-admin/app';
+
+const fApp = initializeApp();
+const streamManager = new FirestoreStreamManager({
+  firebaseApp: fApp,
+  db: getFirestore(fApp),
+  collection: 'streams',
+});
+
+app.post('/longFlow', expressHandler(longFlow, { streamManager }));
+```
+
+<Warning>
+Firestore durable streaming stores each stream's full history in a single document. Firestore has a 1 MB per-document limit. Flows that produce very large outputs should use `RtdbStreamManager` or a custom `StreamManager` implementation.
+</Warning>
+
+## firebase.json configuration
+
+```json
+{
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "ignore": ["node_modules", ".git"],
+      "predeploy": ["npm --prefix \"$RESOURCE_DIR\" run build"]
+    }
+  ]
+}
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Cloud Run" icon="cloud" href="/deployment/cloud-run">
+    Deploy containerised Genkit apps with more control over the runtime.
+  </Card>
+  <Card title="Observability" icon="chart-line" href="/deployment/observability">
+    Configure tracing and monitoring for production.
+  </Card>
+</CardGroup>

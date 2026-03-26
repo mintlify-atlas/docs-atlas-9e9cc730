@@ -1,0 +1,320 @@
+---
+title: "Deploy to Cloud Run"
+description: "Run Genkit flows on Google Cloud Run using Node.js, Python, or Go."
+---
+
+Cloud Run is a fully managed container platform that scales to zero and supports all three Genkit runtimes. It is a good choice when you need more control over the runtime than Firebase Cloud Functions provides — custom base images, background processes, Python or Go flows, or longer request timeouts.
+
+## Node.js
+
+<Steps>
+  <Step title="Create the flow server">
+    `startFlowServer` from `@genkit-ai/express` starts an Express server on the port Cloud Run expects (`$PORT`, defaulting to `8080`).
+
+    ```typescript
+    // src/index.ts
+    import { genkit } from 'genkit';
+    import { vertexAI } from '@genkit-ai/google-genai';
+    import { startFlowServer } from '@genkit-ai/express';
+
+    // On Cloud Run, Application Default Credentials are provided automatically.
+    // Using Vertex AI means no GOOGLE_GENAI_API_KEY is needed.
+    const ai = genkit({
+      plugins: [vertexAI({ location: 'us-central1' })],
+    });
+
+    const menuFlow = ai.defineFlow('menuSuggestion', async (theme: string) => {
+      const { text } = await ai.generate(
+        `Suggest a concise menu for a ${theme} restaurant.`
+      );
+      return text;
+    });
+
+    startFlowServer({
+      flows: [menuFlow],
+      // port defaults to process.env.PORT || 3400
+    });
+    ```
+
+    For a custom Express app (e.g. to add health-check routes or middleware):
+
+    ```typescript
+    import { expressHandler } from '@genkit-ai/express';
+    import express from 'express';
+
+    const app = express();
+    app.use(express.json());
+
+    app.get('/health', (_req, res) => res.send('ok'));
+    app.post('/menuSuggestion', expressHandler(menuFlow));
+
+    const port = Number(process.env.PORT) || 8080;
+    app.listen(port, () => console.log(`Listening on :${port}`));
+    ```
+  </Step>
+
+  <Step title="Write the Dockerfile">
+    ```dockerfile
+    FROM node:20-slim
+    WORKDIR /app
+
+    COPY package*.json ./
+    RUN npm ci --omit=dev
+
+    COPY dist/ ./dist/
+
+    ENV NODE_ENV=production
+    ENV GENKIT_ENV=production
+
+    EXPOSE 8080
+    CMD ["node", "dist/index.js"]
+    ```
+
+    Build TypeScript before building the image:
+
+    ```bash
+    npm run build
+    docker build -t gcr.io/MY_PROJECT/genkit-app .
+    ```
+  </Step>
+
+  <Step title="Deploy">
+    ```bash
+    gcloud run deploy genkit-app \
+      --image gcr.io/MY_PROJECT/genkit-app \
+      --region us-central1 \
+      --platform managed \
+      --allow-unauthenticated
+    ```
+
+    Cloud Run injects the `PORT` environment variable automatically. The service account attached to the revision provides Application Default Credentials, so Vertex AI works without any additional configuration.
+  </Step>
+</Steps>
+
+## Python
+
+<Steps>
+  <Step title="Create the Flask or FastAPI app">
+    <CodeGroup>
+      ```python main.py (Flask)
+      from flask import Flask
+      from genkit import Genkit
+      from genkit.plugins.flask import genkit_flask_handler
+      from genkit.plugins.google_genai import GoogleAI
+
+      ai = Genkit(
+          plugins=[GoogleAI()],
+          model='googleai/gemini-2.0-flash',
+      )
+      app = Flask(__name__)
+
+      @app.post('/menuSuggestion')
+      @genkit_flask_handler(ai)
+      @ai.flow()
+      async def menu_suggestion(theme: str) -> str:
+          response = await ai.generate(
+              prompt=f'Suggest a concise menu for a {theme} restaurant.'
+          )
+          return response.text
+
+      if __name__ == '__main__':
+          import os
+          port = int(os.environ.get('PORT', 8080))
+          app.run(host='0.0.0.0', port=port)
+      ```
+
+      ```python main.py (FastAPI)
+      import os
+      import uvicorn
+      from fastapi import FastAPI
+      from genkit import Genkit
+      from genkit.plugins.fastapi import genkit_fastapi_handler
+      from genkit.plugins.google_genai import GoogleAI
+
+      ai = Genkit(
+          plugins=[GoogleAI()],
+          model='googleai/gemini-2.0-flash',
+      )
+      app = FastAPI()
+
+      @app.post('/menuSuggestion', response_model=None)
+      @genkit_fastapi_handler(ai)
+      @ai.flow()
+      async def menu_suggestion(theme: str) -> str:
+          response = await ai.generate(
+              prompt=f'Suggest a concise menu for a {theme} restaurant.'
+          )
+          return response.text
+
+      if __name__ == '__main__':
+          uvicorn.run(app, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+      ```
+    </CodeGroup>
+  </Step>
+
+  <Step title="Write the Dockerfile">
+    ```dockerfile
+    FROM python:3.12-slim
+    WORKDIR /app
+
+    COPY requirements.txt ./
+    RUN pip install --no-cache-dir -r requirements.txt
+
+    COPY . .
+
+    ENV GENKIT_ENV=production
+    EXPOSE 8080
+
+    CMD ["python", "main.py"]
+    ```
+  </Step>
+
+  <Step title="Deploy">
+    ```bash
+    gcloud run deploy genkit-py \
+      --source . \
+      --region us-central1 \
+      --allow-unauthenticated \
+      --set-env-vars GOOGLE_GENAI_API_KEY=your_key
+    ```
+
+    Using `--source .` triggers Cloud Build to build and push the image automatically. Alternatively build the image manually and use `--image`.
+  </Step>
+</Steps>
+
+## Go
+
+<Steps>
+  <Step title="Create the HTTP server">
+    Use `genkit.Handler` to register each flow and `server.Start` (from the `server` plugin) to manage the HTTP server lifecycle with graceful shutdown.
+
+    ```go
+    package main
+
+    import (
+        "context"
+        "fmt"
+        "net/http"
+        "os"
+
+        "github.com/firebase/genkit/go/ai"
+        "github.com/firebase/genkit/go/genkit"
+        "github.com/firebase/genkit/go/plugins/googlegenai"
+        "github.com/firebase/genkit/go/plugins/server"
+    )
+
+    func main() {
+        ctx := context.Background()
+        g := genkit.Init(ctx, genkit.WithPlugins(&googlegenai.GoogleAI{}))
+
+        menuFlow := genkit.DefineFlow(g, "menuSuggestion",
+            func(ctx context.Context, theme string) (string, error) {
+                resp, err := genkit.Generate(ctx, g,
+                    ai.WithPrompt(fmt.Sprintf(
+                        "Suggest a concise menu for a %s restaurant.", theme,
+                    )),
+                )
+                if err != nil {
+                    return "", err
+                }
+                return resp.Text(), nil
+            },
+        )
+
+        mux := http.NewServeMux()
+        mux.HandleFunc("POST /menuSuggestion", genkit.Handler(menuFlow))
+        mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+            w.Write([]byte("ok"))
+        })
+
+        port := os.Getenv("PORT")
+        if port == "" {
+            port = "8080"
+        }
+        server.Start(ctx, ":"+port, mux)
+    }
+    ```
+  </Step>
+
+  <Step title="Write the Dockerfile">
+    ```dockerfile
+    FROM golang:1.22-bookworm AS builder
+    WORKDIR /app
+    COPY go.mod go.sum ./
+    RUN go mod download
+    COPY . .
+    RUN CGO_ENABLED=0 go build -o /genkit-app .
+
+    FROM gcr.io/distroless/static-debian12
+    COPY --from=builder /genkit-app /genkit-app
+    ENV GENKIT_ENV=production
+    EXPOSE 8080
+    ENTRYPOINT ["/genkit-app"]
+    ```
+  </Step>
+
+  <Step title="Deploy">
+    ```bash
+    gcloud run deploy genkit-go \
+      --source . \
+      --region us-central1 \
+      --allow-unauthenticated
+    ```
+  </Step>
+</Steps>
+
+## Authentication with Workload Identity
+
+When you use Vertex AI (rather than the Gemini API key) on Cloud Run, no API key is required. The Cloud Run service account provides Application Default Credentials (ADC) automatically. Grant the service account the `roles/aiplatform.user` role:
+
+```bash
+gcloud projects add-iam-policy-binding MY_PROJECT \
+  --member="serviceAccount:MY_SA@MY_PROJECT.iam.gserviceaccount.com" \
+  --role="roles/aiplatform.user"
+```
+
+<Tip>
+Using Vertex AI with Workload Identity is the recommended approach for production Cloud Run services. It avoids storing long-lived API keys and automatically rotates credentials.
+</Tip>
+
+## Disable the dev reflection server
+
+<Warning>
+Do not deploy with `GENKIT_ENV=dev`. The Genkit reflection server exposes an unauthenticated API for invoking all registered flows. Remove `GENKIT_ENV` from your environment or set it to `production`.
+</Warning>
+
+Set it in your Dockerfile or as a Cloud Run environment variable:
+
+```bash
+gcloud run services update genkit-app \
+  --update-env-vars GENKIT_ENV=production
+```
+
+## Context providers and auth
+
+For flows that should only be called by authenticated clients, add a `contextProvider` (Node.js/Python) or `WithContextProviders` (Go):
+
+```typescript
+// Node.js
+import { UserFacingError } from 'genkit';
+import type { ContextProvider, RequestData } from 'genkit/context';
+
+const apiKeyAuth: ContextProvider<{ apiKey: string }> = (req: RequestData) => {
+  const key = req.headers['x-api-key'];
+  if (!key) throw new UserFacingError('UNAUTHENTICATED', 'Missing X-Api-Key header');
+  return { apiKey: key };
+};
+
+app.post('/menuSuggestion', expressHandler(menuFlow, { contextProvider: apiKeyAuth }));
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Observability" icon="chart-line" href="/deployment/observability">
+    Enable Cloud Trace and Cloud Monitoring for your Cloud Run service.
+  </Card>
+  <Card title="Firebase" icon="fire" href="/deployment/firebase">
+    Deploy Node.js flows as Firebase Cloud Functions.
+  </Card>
+</CardGroup>

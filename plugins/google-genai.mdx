@@ -1,0 +1,396 @@
+---
+title: "Google AI plugin"
+description: "Use Gemini models, Imagen image generation, and text embeddings from the Google AI (Gemini Developer API) and Vertex AI through a single unified plugin."
+---
+
+The `@genkit-ai/google-genai` package is the **unified Google plugin** for Genkit. It exports two initializers:
+
+- **`googleAI`** — connects to the **Gemini Developer API** (Google AI Studio). Best for prototyping, quick experiments, and apps that don't need a Google Cloud project.
+- **`vertexAI`** — connects to **Google Cloud Vertex AI**. Best for production workloads, enterprise compliance, and access to Vertex-only features. See the [Vertex AI plugin page](/plugins/vertex-ai) for the full Vertex story.
+
+This page covers `googleAI`.
+
+<Note>
+The older `@genkit-ai/googleai` package is superseded by `@genkit-ai/google-genai`. Migrate by changing your import and plugin initializer — the model reference syntax is identical.
+</Note>
+
+## Installation
+
+<Tabs>
+  <Tab title="TypeScript">
+    <CodeGroup>
+      ```bash npm
+      npm install @genkit-ai/google-genai
+      ```
+      ```bash pnpm
+      pnpm add @genkit-ai/google-genai
+      ```
+      ```bash yarn
+      yarn add @genkit-ai/google-genai
+      ```
+    </CodeGroup>
+  </Tab>
+  <Tab title="Go">
+    ```bash
+    go get github.com/firebase/genkit/go/plugins/googlegenai
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```bash
+    pip install genkit-google-genai-plugin
+    ```
+  </Tab>
+</Tabs>
+
+## Configuration
+
+### API key
+
+Obtain a free API key from [Google AI Studio](https://aistudio.google.com/apikey) and set it as an environment variable:
+
+```bash
+export GEMINI_API_KEY=your_api_key
+# GOOGLE_API_KEY is also accepted as a fallback
+```
+
+Or pass it directly at plugin init time (useful for testing, not recommended for production):
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    import { genkit } from 'genkit';
+    import { googleAI } from '@genkit-ai/google-genai';
+
+    const ai = genkit({
+      plugins: [
+        googleAI(),
+        // Or with an explicit key:
+        // googleAI({ apiKey: process.env.MY_KEY }),
+      ],
+    });
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import (
+      "github.com/firebase/genkit/go/genkit"
+      "github.com/firebase/genkit/go/plugins/googlegenai"
+    )
+
+    g := genkit.Init(ctx,
+      genkit.WithPlugins(&googlegenai.GoogleAI{
+        APIKey: "your-api-key", // Optional: defaults to GEMINI_API_KEY or GOOGLE_API_KEY
+      }),
+    )
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from genkit import Genkit
+    from genkit.plugins.google_genai import GoogleAI
+
+    ai = Genkit(
+        plugins=[GoogleAI()],  # reads GEMINI_API_KEY from environment
+        # Or: plugins=[GoogleAI(api_key='your-key')]
+    )
+    ```
+  </Tab>
+</Tabs>
+
+### Plugin options (TypeScript)
+
+The `GoogleAIPluginOptions` interface exposes these fields:
+
+```ts
+interface GoogleAIPluginOptions {
+  /**
+   * API key to authenticate with the Gemini API.
+   * Defaults to GEMINI_API_KEY or GOOGLE_API_KEY env vars.
+   * Set to `false` to require a per-request apiKey in model config.
+   */
+  apiKey?: string | false;
+
+  /** Override the default API version (e.g. 'v1'). */
+  apiVersion?: string;
+
+  /** Override the default base URL. */
+  baseUrl?: string;
+
+  /** Additional headers sent with every request. */
+  customHeaders?: Record<string, string>;
+
+  /** Use legacy responseSchema field instead of responseJsonSchema. */
+  legacyResponseSchema?: boolean;
+}
+```
+
+## Available models
+
+The plugin dynamically discovers available models from the API. Pre-registered known models include:
+
+| Model name | Best for |
+|------------|----------|
+| `gemini-2.5-pro` | Complex reasoning, long context |
+| `gemini-2.5-flash` | Fast, cost-effective general tasks |
+| `gemini-2.5-flash-lite` | Lowest latency, simple tasks |
+| `gemini-2.5-flash-image` | Native image output alongside text |
+| `gemini-2.5-flash-preview-tts` | Text-to-speech |
+| `gemini-2.5-pro-preview-tts` | High-quality TTS |
+| `gemma-3-27b-it` | Open-weight text generation |
+| `gemma-3-12b-it` | Smaller open-weight model |
+| `imagen-4.0-generate-001` | Photorealistic image generation |
+| `imagen-4.0-fast-generate-001` | Faster image generation |
+| `imagen-4.0-ultra-generate-001` | Highest quality image generation |
+| `gemini-embedding-001` | Text embeddings (768 dims) |
+| `gemini-embedding-2-preview` | Multimodal embeddings (3072 dims) |
+
+You can use any model ID supported by the underlying SDK — new models appear automatically without a plugin update.
+
+## Basic text generation
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    import { genkit } from 'genkit';
+    import { googleAI } from '@genkit-ai/google-genai';
+
+    const ai = genkit({ plugins: [googleAI()] });
+
+    const response = await ai.generate({
+      model: googleAI.model('gemini-2.5-flash'),
+      prompt: 'Explain how neural networks learn.',
+    });
+
+    console.log(response.text);
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    g := genkit.Init(ctx, genkit.WithPlugins(&googlegenai.GoogleAI{}))
+
+    resp, err := genkit.Generate(ctx, g,
+      ai.WithModelName("googleai/gemini-2.5-flash"),
+      ai.WithPrompt("Explain how neural networks learn."),
+    )
+    fmt.Println(resp.Text())
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    ai = Genkit(plugins=[GoogleAI()])
+
+    response = await ai.generate(
+        model='googleai/gemini-2.5-flash',
+        prompt='Explain how neural networks learn.',
+    )
+    print(response.text)
+    ```
+  </Tab>
+</Tabs>
+
+## Model configuration
+
+Pass a `GeminiConfig` object alongside the model reference to tune generation:
+
+```ts
+const response = await ai.generate({
+  model: googleAI.model('gemini-2.5-flash', {
+    temperature: 0.7,
+    maxOutputTokens: 1024,
+    safetySettings: [
+      {
+        category: 'HARM_CATEGORY_HATE_SPEECH',
+        threshold: 'BLOCK_ONLY_HIGH',
+      },
+    ],
+    // Enable thinking for complex reasoning tasks
+    thinkingConfig: {
+      thinkingBudget: 2048,
+      includeThoughts: false,
+    },
+  }),
+  prompt: 'Walk me through this algorithm step by step.',
+});
+```
+
+Available `GeminiConfig` fields include:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `temperature` | `number` (0–2) | Sampling randomness. Default 1.0. |
+| `topP` | `number` (0–1) | Nucleus sampling probability. Default 0.95. |
+| `maxOutputTokens` | `number` | Token cap on the response. |
+| `stopSequences` | `string[]` | Stop generation at these strings. |
+| `safetySettings` | array | Per-category content filtering thresholds. |
+| `thinkingConfig` | object | Control the thinking budget for Gemini 2.5+. |
+| `codeExecution` | `boolean` | Allow the model to write and run Python code. |
+| `googleSearch` | `boolean \| object` | Ground responses with live Google Search. |
+| `functionCallingConfig` | object | Control when tools are invoked (AUTO / ANY / NONE). |
+| `responseModalities` | `('TEXT'\|'IMAGE'\|'AUDIO')[]` | Request specific output types. |
+| `contextCache` | `boolean` | Reuse cached input tokens. |
+
+## Structured output
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    import { z } from 'genkit';
+
+    const RecipeSchema = z.object({
+      name: z.string(),
+      ingredients: z.array(z.string()),
+      steps: z.array(z.string()),
+    });
+
+    const { output } = await ai.generate({
+      model: googleAI.model('gemini-2.5-flash'),
+      prompt: 'Give me a recipe for banana bread.',
+      output: { schema: RecipeSchema },
+    });
+
+    console.log(output.name);
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    type Recipe struct {
+      Name        string   `json:"name"`
+      Ingredients []string `json:"ingredients"`
+      Steps       []string `json:"steps"`
+    }
+
+    recipe, _, err := genkit.GenerateData[Recipe](ctx, g,
+      ai.WithModelName("googleai/gemini-2.5-flash"),
+      ai.WithPrompt("Give me a recipe for banana bread."),
+    )
+    fmt.Println(recipe.Name)
+    ```
+  </Tab>
+</Tabs>
+
+## Multimodal input
+
+Gemini 2.5 models accept text, images, audio, video, and PDFs in the same request:
+
+```ts
+const response = await ai.generate({
+  model: googleAI.model('gemini-2.5-flash'),
+  messages: [
+    {
+      role: 'user',
+      content: [
+        { text: 'What is in this image?' },
+        { media: { url: 'https://example.com/photo.jpg', contentType: 'image/jpeg' } },
+      ],
+    },
+  ],
+});
+```
+
+<Tip>
+For Gemini 2.5+ models, external HTTPS URLs are passed directly to the API. For Gemini 2.0 models, Genkit automatically downloads external media and inlines it (up to 100 MB).
+</Tip>
+
+## Function calling (tools)
+
+```ts
+const weatherTool = ai.defineTool(
+  {
+    name: 'getWeather',
+    description: 'Returns the current weather for a city.',
+    inputSchema: z.object({ city: z.string() }),
+    outputSchema: z.object({ temperature: z.number(), condition: z.string() }),
+  },
+  async ({ city }) => fetchWeather(city)
+);
+
+const response = await ai.generate({
+  model: googleAI.model('gemini-2.5-flash'),
+  prompt: 'What is the weather like in London?',
+  tools: [weatherTool],
+});
+```
+
+## Embeddings
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    const embeddings = await ai.embed({
+      embedder: googleAI.embedder('gemini-embedding-001'),
+      content: 'Machine learning optimises model parameters.',
+    });
+    // embeddings[0].embedding → number[]
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    res, err := genkit.Embed(ctx, g,
+      ai.WithEmbedderName("googleai/gemini-embedding-001"),
+      ai.WithTextDocs("Machine learning optimises model parameters."),
+    )
+    fmt.Println(res.Embeddings[0].Embedding)
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    result = await ai.embed(
+        embedder='googleai/gemini-embedding-001',
+        content='Machine learning optimises model parameters.',
+    )
+    ```
+  </Tab>
+</Tabs>
+
+### Embedder config
+
+| Option | Description |
+|--------|-------------|
+| `taskType` | Hint about downstream use (`RETRIEVAL_DOCUMENT`, `RETRIEVAL_QUERY`, `SEMANTIC_SIMILARITY`, etc.) |
+| `outputDimensionality` | Truncate to a smaller dimension (1–768, model-dependent). |
+| `title` | Document title, used with `RETRIEVAL_DOCUMENT` task type. |
+
+## Image generation (Imagen)
+
+```ts
+const response = await ai.generate({
+  model: googleAI.model('imagen-4.0-generate-001', {
+    numberOfImages: 2,
+    aspectRatio: '16:9',
+  }),
+  prompt: 'A serene Japanese garden at sunrise, watercolour style.',
+});
+
+const image = response.media();
+// image.url contains a base64 data URI
+```
+
+## Google Search grounding
+
+Ground responses with real-time web data:
+
+```ts
+const response = await ai.generate({
+  model: googleAI.model('gemini-2.5-flash', {
+    googleSearch: true,
+  }),
+  prompt: 'What are the top AI announcements this week?',
+});
+```
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Vertex AI plugin" href="/plugins/vertex-ai">
+    Enterprise Gemini access with GCP credentials.
+  </Card>
+  <Card title="Structured output" href="/guides/structured-output">
+    Type-safe JSON generation with Zod schemas.
+  </Card>
+  <Card title="Multimodal" href="/guides/multimodal">
+    Working with images, audio, and video.
+  </Card>
+  <Card title="Tools" href="/concepts/tools">
+    Give models access to functions and external data.
+  </Card>
+</CardGroup>

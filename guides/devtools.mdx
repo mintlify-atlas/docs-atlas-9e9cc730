@@ -1,0 +1,230 @@
+---
+title: "Developer tools"
+description: "Use the Genkit CLI and Developer UI to run, inspect, and debug your AI application locally."
+---
+
+Genkit ships with a CLI and a local Developer UI that make it easy to iterate on flows, prompts, models, and evaluations without deploying. Every flow run, model call, and tool invocation is traced and viewable in real time.
+
+## Installation
+
+Install the Genkit CLI globally:
+
+```bash
+npm install -g genkit-cli
+```
+
+Verify the installation:
+
+```bash
+genkit --version
+```
+
+## Starting the Developer UI
+
+The `genkit start` command launches both your application and the Dev UI. Pass your application's start command after `--`:
+
+<Tabs>
+  <Tab title="TypeScript (tsx)">
+    ```bash
+    genkit start -- npx tsx src/index.ts
+    ```
+  </Tab>
+  <Tab title="TypeScript (ts-node)">
+    ```bash
+    genkit start -- npx ts-node src/index.ts
+    ```
+  </Tab>
+  <Tab title="Node.js (compiled)">
+    ```bash
+    genkit start -- node lib/index.js
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```bash
+    genkit start -- python src/main.py
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```bash
+    GENKIT_ENV=dev go run .
+    ```
+  </Tab>
+</Tabs>
+
+Genkit sets `GENKIT_ENV=dev` for you, which tells your application to start the Reflection API server on port `3100`. The Dev UI then connects to this server.
+
+The Dev UI opens at `http://localhost:4000` by default. Use `--port` to change the port:
+
+```bash
+genkit start --port 5000 -- npx tsx src/index.ts
+```
+
+To open the browser automatically on startup:
+
+```bash
+genkit start --open -- npx tsx src/index.ts
+```
+
+<Note>
+You can start the Dev UI without running your application by calling `genkit start` without the `--` separator. This is useful if you already have your app running in a separate process.
+</Note>
+
+## What the Dev UI shows
+
+The Developer UI is divided into several sections:
+
+| Section | Description |
+|---------|-------------|
+| **Flows** | List of all registered flows. Run them interactively with custom inputs. |
+| **Models** | All registered models. Send test prompts directly to any model. |
+| **Prompts** | Dotprompt files and programmatic prompts. Test with variable inputs. |
+| **Tools** | Registered tools. Inspect their schemas and call them manually. |
+| **Traces** | Full execution trace for every flow run, including all sub-steps. |
+| **Evaluate** | View and compare evaluation run results. |
+
+## Running flows from the CLI
+
+Use `genkit flow:run` to invoke a flow by name with a JSON input:
+
+```bash
+# Run a flow with a string input
+genkit flow:run myFlow '"hello world"'
+
+# Run a flow with an object input
+genkit flow:run summarize '{"url": "https://example.com/article"}'
+
+# Stream flow output as it is produced
+genkit flow:run storyFlow '"robots"' --stream
+
+# Save the output to a file
+genkit flow:run myFlow '"input"' --output result.json
+
+# Pass context (e.g. auth data)
+genkit flow:run myFlow '"input"' --context '{"auth": {"uid": "user-123"}}'
+```
+
+<Note>
+The app must be running in dev mode (started with `genkit start`) for `flow:run` to work. It connects to the Reflection API to trigger the flow.
+</Note>
+
+## Key CLI commands
+
+| Command | Description |
+|---------|-------------|
+| `genkit start` | Start the Dev UI and optionally launch your app. |
+| `genkit start -- <cmd>` | Launch your app in dev mode and start the Dev UI. |
+| `genkit flow:run <name> [data]` | Run a registered flow by name. |
+| `genkit eval:run <dataset>` | Run a dataset through all registered evaluators. |
+| `genkit eval:run <dataset> --evaluators <list>` | Run with specific evaluators only. |
+| `genkit eval:run <dataset> --output <file>` | Save evaluation results to a file. |
+| `genkit --help` | List all available commands. |
+
+## Inspecting traces
+
+Every flow execution produces a trace — a hierarchical record of all steps taken. Traces are visible in the **Traces** section of the Dev UI.
+
+A trace for a typical flow looks like:
+
+```
+Flow: summarizeArticle           120ms
+├── fetch-content                 45ms
+│   └── generate                  40ms
+│       └── googleai/gemini-2.0-flash
+└── format-output                  3ms
+```
+
+Each span shows:
+- **Name** — the step or action name.
+- **Duration** — how long it took.
+- **Input / Output** — the data passed in and returned.
+- **Error** — any exception thrown at that step.
+- **Metadata** — model, tokens used, finish reason, etc.
+
+To view a trace, click on any flow run in the Traces panel. You can drill into nested spans to see exactly what each model call received and produced.
+
+## Running evaluations with the CLI
+
+See the [Evaluation guide](/guides/evaluation) for dataset format and evaluator definitions. To trigger a run:
+
+```bash
+# Run all evaluators against a dataset
+genkit eval:run path/to/dataset.json
+
+# Run specific evaluators
+genkit eval:run path/to/dataset.json --evaluators coherence,wordCount
+
+# Automatically accept billing confirmation
+genkit eval:run path/to/dataset.json --force
+
+# Run with parallel batching for speed
+genkit eval:run path/to/dataset.json --batchSize 4
+
+# Export results as CSV
+genkit eval:run path/to/dataset.json --output results.csv --output-format csv
+```
+
+## The Reflection API
+
+The Dev UI communicates with your running application through the **Reflection API** — a lightweight HTTP server that Genkit automatically starts when `GENKIT_ENV=dev` is set. It runs on port `3100` by default.
+
+The Reflection API provides endpoints to:
+- **List actions** — Enumerate all registered flows, models, prompts, tools, and evaluators.
+- **Run actions** — Trigger any registered action with arbitrary input.
+- **Stream actions** — Stream the output of a flow or generate call.
+- **List traces** — Retrieve stored trace data.
+
+You do not interact with the Reflection API directly during normal development — the CLI and Dev UI use it under the hood. It is only started in dev mode and should not be exposed in production.
+
+<Warning>
+Do not expose the Reflection API in production. It provides unrestricted access to run any registered action without authentication. Set `GENKIT_ENV=prod` or remove the environment variable when deploying.
+</Warning>
+
+## Options and flags
+
+### `genkit start` options
+
+| Flag | Description |
+|------|-------------|
+| `--noui` | Start your app in dev mode without launching the Dev UI. |
+| `--port <port>` | Port for the Dev UI (default: finds an open port in 4000–4099). |
+| `--open` | Open the browser automatically when the Dev UI starts. |
+| `--disable-realtime-telemetry` | Disable real-time telemetry streaming to the UI. |
+| `--cors-origin <origin>` | Allowed origin for CORS requests to the Dev UI. |
+
+### `genkit flow:run` options
+
+| Flag | Description |
+|------|-------------|
+| `--stream` | Stream output chunks as they are produced. |
+| `--output <file>` | Write the flow output to a JSON file. |
+| `--context <JSON>` | JSON object passed as the action context (e.g., auth data). |
+| `--wait` | Wait for the flow to complete before exiting. |
+
+## Python and Go support
+
+The CLI works with Python and Go applications that use Genkit. The Reflection API is implemented in all SDKs. For Go, set `GENKIT_ENV=dev` before running your binary:
+
+```bash
+# Go
+GENKIT_ENV=dev go run .
+
+# Python
+genkit start -- python src/main.py
+```
+
+The Dev UI will connect to the Reflection API server started by the SDK regardless of which language you use.
+
+<CardGroup cols={2}>
+  <Card title="Flows" icon="rectangle-code" href="/concepts/flows">
+    Learn about the flows that appear in the Dev UI.
+  </Card>
+  <Card title="Evaluation" icon="chart-bar" href="/guides/evaluation">
+    Run and interpret eval results in the Dev UI.
+  </Card>
+  <Card title="Deployment" icon="cloud" href="/deployment/overview">
+    Move from dev mode to production deployment.
+  </Card>
+  <Card title="Observability" icon="activity" href="/deployment/observability">
+    Export traces to Cloud Trace, Jaeger, and other backends.
+  </Card>
+</CardGroup>

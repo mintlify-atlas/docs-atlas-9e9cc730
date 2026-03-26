@@ -1,0 +1,302 @@
+---
+title: "Evaluation"
+description: "Measure the quality of your AI outputs with custom and built-in evaluators."
+---
+
+Evaluation lets you systematically score your model's outputs against a dataset. This is essential for catching regressions, comparing model versions, and building confidence before deploying changes.
+
+## Core concepts
+
+- **Dataset** — A JSON file containing test cases. Each case has an `input`, an optional `output` (the model's response), an optional `reference` (expected answer), and optional `context` (retrieved documents for RAG).
+- **Evaluator** — A function that scores a test case and returns a numeric, boolean, or string score.
+- **Eval run** — The result of running a dataset through one or more evaluators.
+
+## Defining a custom evaluator
+
+Use `ai.defineEvaluator()` to create an evaluator. The runner function receives a data point and returns an `EvalResponse` with one or more scores:
+
+```typescript
+import { genkit, z } from 'genkit';
+import { googleAI } from '@genkit-ai/google-genai';
+
+const ai = genkit({ plugins: [googleAI()], model: 'googleai/gemini-2.0-flash' });
+
+const wordCountEvaluator = ai.defineEvaluator(
+  {
+    name: 'wordCount',
+    displayName: 'Word Count',
+    definition: 'Checks that the output contains at least 50 words.',
+  },
+  async (datapoint) => {
+    const output = String(datapoint.output ?? '');
+    const wordCount = output.split(/\s+/).filter(Boolean).length;
+
+    return {
+      testCaseId: datapoint.testCaseId,
+      evaluation: {
+        score: wordCount,
+        status: wordCount >= 50 ? 'PASS' : 'FAIL',
+        details: {
+          reasoning: `Output contains ${wordCount} words (minimum: 50).`,
+        },
+      },
+    };
+  }
+);
+```
+
+### Score schema
+
+The `evaluation` field of an `EvalResponse` follows the `Score` schema:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `score` | `number \| string \| boolean` | The raw score value. |
+| `status` | `'PASS' \| 'FAIL' \| 'UNKNOWN'` | Optional pass/fail classification. |
+| `error` | `string` | Error message if the evaluation failed. |
+| `details.reasoning` | `string` | Explanation for the score. |
+| `id` | `string` | Optional ID for multi-score evaluations. |
+
+## LLM-based evaluators
+
+Evaluators can themselves use an LLM to score outputs — commonly called "LLM-as-judge". This is useful for qualities that are hard to measure programmatically, such as coherence, factuality, or helpfulness:
+
+```typescript
+const coherenceEvaluator = ai.defineEvaluator(
+  {
+    name: 'coherence',
+    displayName: 'Coherence',
+    definition: 'Rates how logically coherent and well-structured the response is.',
+    isBilled: true, // flag as a billed evaluator (uses an LLM)
+  },
+  async (datapoint) => {
+    const response = await ai.generate({
+      prompt: [
+        { text: 'You are an expert evaluator. Rate the following text for coherence on a scale of 1-5.' },
+        { text: `Text to evaluate:\n${datapoint.output}` },
+        { text: 'Respond with JSON: { "score": <number>, "reasoning": "<explanation>" }' },
+      ],
+      output: {
+        schema: z.object({ score: z.number(), reasoning: z.string() }),
+      },
+    });
+
+    const result = response.output!;
+    return {
+      testCaseId: datapoint.testCaseId,
+      evaluation: {
+        score: result.score,
+        status: result.score >= 4 ? 'PASS' : 'FAIL',
+        details: { reasoning: result.reasoning },
+      },
+    };
+  }
+);
+```
+
+## Dataset format
+
+Datasets are JSON files containing an array of data points. Each data point matches the `BaseDataPoint` schema:
+
+```json
+[
+  {
+    "testCaseId": "case-001",
+    "input": "Summarize the water cycle in two sentences.",
+    "output": "Water evaporates from oceans and lakes, rises as vapor, condenses into clouds, and falls back to Earth as precipitation. This cycle continuously distributes fresh water across the planet.",
+    "reference": "The water cycle involves evaporation, condensation, and precipitation."
+  },
+  {
+    "testCaseId": "case-002",
+    "input": "What is photosynthesis?",
+    "output": "Photosynthesis is the process plants use to convert sunlight, water, and carbon dioxide into glucose and oxygen."
+  }
+]
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `input` | Yes | The input given to the model. |
+| `output` | No | The model's response. If omitted, `eval:run` will generate one. |
+| `reference` | No | The expected or ideal answer for comparison. |
+| `context` | No | Retrieved documents (for RAG evaluation). |
+| `testCaseId` | No | Unique ID. Auto-generated if omitted. |
+
+## Running evaluations with the CLI
+
+Use `genkit eval:run` to run a dataset through all registered evaluators:
+
+```bash
+# Start your app in dev mode first
+genkit start -- npx tsx src/index.ts
+
+# In another terminal, run the evaluation
+genkit eval:run dataset.json
+
+# Run with specific evaluators only
+genkit eval:run dataset.json --evaluators wordCount,coherence
+
+# Save results to a file
+genkit eval:run dataset.json --output results.json
+
+# Use parallel batching for speed
+genkit eval:run dataset.json --batchSize 4
+```
+
+After the run completes, the CLI prints a link to view results in the Dev UI:
+
+```
+View the evaluation results at: http://localhost:4000/evaluate/eval-run-id
+```
+
+<Note>
+Evaluators marked `isBilled: true` use LLM calls and may incur API charges. The CLI prompts you to confirm before running billed evaluators. Use `--force` to skip the confirmation.
+</Note>
+
+## Built-in evaluators
+
+The `@genkit-ai/evaluators` plugin provides a set of ready-to-use evaluators:
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    import { genkitEval, GenkitMetric } from '@genkit-ai/evaluators';
+    import { googleAI } from '@genkit-ai/google-genai';
+
+    const ai = genkit({
+      plugins: [
+        googleAI(),
+        genkitEval({
+          judge: googleAI.model('gemini-2.0-flash'),
+          metrics: [
+            GenkitMetric.FAITHFULNESS,
+            GenkitMetric.ANSWER_RELEVANCY,
+            GenkitMetric.MALICIOUSNESS,
+          ],
+        }),
+      ],
+    });
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from genkit import Genkit
+    from genkit.plugins.google_genai import GoogleAI
+    from genkit.plugins.evaluators import GenkitEval, GenkitMetric
+
+    ai = Genkit(
+        plugins=[
+            GoogleAI(),
+            GenkitEval(
+                judge='googleai/gemini-2.0-flash',
+                metrics=[
+                    GenkitMetric.FAITHFULNESS,
+                    GenkitMetric.ANSWER_RELEVANCY,
+                ],
+            ),
+        ]
+    )
+    ```
+  </Tab>
+</Tabs>
+
+Available metrics:
+
+| Metric | Description |
+|--------|-------------|
+| `FAITHFULNESS` | Does the output stick to facts in the provided context? |
+| `ANSWER_RELEVANCY` | Is the answer relevant to the input question? |
+| `MALICIOUSNESS` | Does the output contain harmful or malicious content? |
+| `CONTEXT_RECALL` | Did the model use the relevant context? |
+| `CONTEXT_PRECISION` | Was the retrieved context actually useful? |
+
+## RAGAS evaluators for RAG quality
+
+For Retrieval-Augmented Generation (RAG) pipelines, the `@genkit-ai/evaluators` package includes RAGAS-based metrics that measure both retrieval and generation quality:
+
+```typescript
+import { genkitEval, GenkitMetric } from '@genkit-ai/evaluators';
+
+const ai = genkit({
+  plugins: [
+    googleAI(),
+    genkitEval({
+      judge: googleAI.model('gemini-2.0-flash'),
+      metrics: [
+        GenkitMetric.CONTEXT_RECALL,    // Did retrieved docs contain the answer?
+        GenkitMetric.CONTEXT_PRECISION, // Was retrieval precise (low noise)?
+        GenkitMetric.FAITHFULNESS,      // Does the answer only use retrieved facts?
+        GenkitMetric.ANSWER_RELEVANCY,  // Is the answer on-topic?
+      ],
+    }),
+  ],
+});
+```
+
+For RAG evaluations, include the retrieved `context` in your dataset:
+
+```json
+[
+  {
+    "input": "What is the return policy?",
+    "output": "You can return items within 30 days of purchase.",
+    "context": [
+      "Our return policy allows returns within 30 days for unused items.",
+      "Items must be in original packaging."
+    ],
+    "reference": "30-day return window for unused items in original packaging."
+  }
+]
+```
+
+## Interpreting results
+
+Evaluation results appear in the Dev UI under the **Evaluate** tab. Each row shows:
+
+- **Test case** — The input and output being scored.
+- **Score** — The numeric or boolean score from each evaluator.
+- **Status** — `PASS`, `FAIL`, or `UNKNOWN`.
+- **Reasoning** — The evaluator's explanation (for LLM-based evaluators).
+
+Use the results to:
+- Identify which test cases consistently fail and improve the relevant prompt or retrieval logic.
+- Track metrics over time by re-running evaluations after each change.
+- Compare two model versions by running both against the same dataset.
+
+## Programmatic evaluation
+
+You can also run evaluations programmatically from your code using `ai.evaluate()`:
+
+```typescript
+const dataset = [
+  {
+    testCaseId: 'case-001',
+    input: 'Summarize the water cycle.',
+    output: 'Water evaporates and falls as rain.',
+  },
+];
+
+const results = await ai.evaluate({
+  evaluator: wordCountEvaluator,
+  dataset,
+});
+
+for (const result of results) {
+  console.log(result.testCaseId, result.evaluation);
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="Developer tools" icon="terminal" href="/guides/devtools">
+    View evaluation results in the Dev UI.
+  </Card>
+  <Card title="RAG" icon="database" href="/concepts/rag">
+    Build retrieval-augmented generation pipelines.
+  </Card>
+  <Card title="Flows" icon="rectangle-code" href="/concepts/flows">
+    Wrap model calls in observable flows for easier eval.
+  </Card>
+  <Card title="Plugins overview" icon="plug" href="/plugins/overview">
+    Find evaluator plugins in the plugin ecosystem.
+  </Card>
+</CardGroup>

@@ -1,0 +1,270 @@
+---
+title: "Tools"
+description: "Define functions that AI models can call. Genkit automatically handles the tool call / response loop."
+---
+
+**Tool calling** (also called function calling) lets a model invoke functions you define when it needs external data or actions to fulfill a request. You define the tool, the model decides when to use it, and Genkit handles the back-and-forth automatically.
+
+## Defining a tool
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    import { genkit, z } from 'genkit';
+    import { googleAI } from '@genkit-ai/google-genai';
+
+    const ai = genkit({ plugins: [googleAI()] });
+
+    const getWeather = ai.defineTool(
+      {
+        name: 'getWeather',
+        description:
+          'Returns the current weather for a given city. '
+          + 'Call this whenever the user asks about weather.',
+        inputSchema: z.object({
+          city: z.string().describe('The city to fetch weather for'),
+          unit: z.enum(['celsius', 'fahrenheit']).default('celsius'),
+        }),
+        outputSchema: z.object({
+          temperature: z.number(),
+          condition: z.string(),
+          humidity: z.number(),
+        }),
+      },
+      async (input) => {
+        // Call your actual weather API here
+        const data = await fetchWeatherApi(input.city, input.unit);
+        return {
+          temperature: data.temp,
+          condition: data.description,
+          humidity: data.humidity,
+        };
+      }
+    );
+    ```
+
+    `inputSchema` and `outputSchema` are [Zod](https://zod.dev) schemas. The descriptions are passed to the model so it knows when and how to call the tool.
+  </Tab>
+  <Tab title="Go">
+    ```go
+    type WeatherInput struct {
+        City string `json:"city" jsonschema_description:"The city to fetch weather for"`
+        Unit string `json:"unit,omitempty" jsonschema_enum:"celsius,fahrenheit"`
+    }
+
+    type WeatherOutput struct {
+        Temperature float64 `json:"temperature"`
+        Condition   string  `json:"condition"`
+        Humidity    float64 `json:"humidity"`
+    }
+
+    getWeather := genkit.DefineTool(g, "getWeather",
+        "Returns the current weather for a given city.",
+        func(ctx *ai.ToolContext, input WeatherInput) (WeatherOutput, error) {
+            // Call your actual weather API here
+            data, err := fetchWeatherApi(input.City, input.Unit)
+            if err != nil {
+                return WeatherOutput{}, err
+            }
+            return WeatherOutput{
+                Temperature: data.Temp,
+                Condition:   data.Description,
+                Humidity:    data.Humidity,
+            }, nil
+        },
+    )
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from genkit import Genkit
+    from genkit.plugins.google_genai import GoogleAI
+    from pydantic import BaseModel, Field
+
+    ai = Genkit(plugins=[GoogleAI()])
+
+    class WeatherInput(BaseModel):
+        city: str = Field(description="The city to fetch weather for")
+        unit: str = Field(default="celsius", pattern="^(celsius|fahrenheit)$")
+
+    class WeatherOutput(BaseModel):
+        temperature: float
+        condition: str
+        humidity: float
+
+    @ai.tool()
+    async def get_weather(input: WeatherInput) -> WeatherOutput:
+        """Returns the current weather for a given city."""
+        data = await fetch_weather_api(input.city, input.unit)
+        return WeatherOutput(
+            temperature=data.temp,
+            condition=data.description,
+            humidity=data.humidity,
+        )
+    ```
+  </Tab>
+</Tabs>
+
+## Passing tools to `generate()`
+
+Pass tools to `generate()` using the `tools` option. The model will call tools as needed and Genkit will automatically run the tool implementations, send results back to the model, and continue until the model produces a final text response.
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    const response = await ai.generate({
+      model: 'googleai/gemini-2.5-flash',
+      tools: [getWeather],
+      prompt: "What's the weather in Tokyo right now?",
+    });
+
+    console.log(response.text);
+    // → "The current weather in Tokyo is 22°C with partly cloudy skies..."
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    resp, err := genkit.Generate(ctx, g,
+        ai.WithModel("googleai/gemini-2.5-flash"),
+        ai.WithTools(getWeather),
+        ai.WithPrompt("What's the weather in Tokyo right now?"),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println(resp.Text())
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    response = await ai.generate(
+        model='googleai/gemini-2.5-flash',
+        tools=[get_weather],
+        prompt="What's the weather in Tokyo right now?",
+    )
+    print(response.text)
+    ```
+  </Tab>
+</Tabs>
+
+## Automatic multi-turn loop
+
+Genkit handles the full tool call/response loop for you:
+
+1. You call `ai.generate()` with a prompt and tools.
+2. The model returns a tool call request instead of a final answer.
+3. Genkit invokes the tool implementation with the model's arguments.
+4. The tool's output is sent back to the model as a tool response.
+5. The model uses the tool output to produce its final response.
+6. Steps 2–5 repeat until the model returns a final text response.
+
+This loop is transparent—`generate()` returns only after the model has produced its final response. You don't need to write any polling or loop logic.
+
+<Note>
+  The default maximum number of tool-call iterations is 5. You can change this via the `maxTurns` option in TypeScript (`config.maxTurns`) or the `ToolConfig.MaxTurns` field in Go.
+</Note>
+
+## Tool choice
+
+Control whether the model is required to use a tool with the `toolChoice` option:
+
+```ts
+const response = await ai.generate({
+  model: 'googleai/gemini-2.5-flash',
+  tools: [getWeather],
+  toolChoice: 'required', // force the model to call a tool
+  prompt: 'Get the weather in Paris.',
+});
+```
+
+| Value | Behavior |
+|-------|----------|
+| `'auto'` | The model decides whether to call a tool (default). |
+| `'required'` | The model must call at least one tool. |
+| `'none'` | The model must not call any tools. |
+
+## Real-world example: web search agent
+
+Here is a more complete example combining multiple tools in a flow:
+
+```ts
+const searchWeb = ai.defineTool(
+  {
+    name: 'searchWeb',
+    description: 'Search the web for current information on a topic.',
+    inputSchema: z.object({ query: z.string() }),
+    outputSchema: z.array(
+      z.object({ title: z.string(), snippet: z.string(), url: z.string() })
+    ),
+  },
+  async ({ query }) => {
+    return await callSearchApi(query);
+  }
+);
+
+const researchFlow = ai.defineFlow(
+  {
+    name: 'research',
+    inputSchema: z.string(),
+    outputSchema: z.string(),
+  },
+  async (topic) => {
+    const response = await ai.generate({
+      model: 'googleai/gemini-2.5-flash',
+      tools: [searchWeb, getWeather],
+      system: 'You are a research assistant. Use tools to gather accurate, up-to-date information.',
+      prompt: `Research the following topic and provide a concise summary: ${topic}`,
+    });
+    return response.text;
+  }
+);
+```
+
+## Using tools with prompts
+
+Tools can also be declared in [Dotprompt](/concepts/prompts) files:
+
+```
+---
+model: googleai/gemini-2.5-flash
+tools:
+  - getWeather
+---
+
+What is the weather forecast for {{ city }} this week?
+```
+
+## Dynamic tools
+
+For tools that should not be registered in the global registry (for example, tools created per-request), use `ai.dynamicTool()` (TypeScript):
+
+```ts
+const userSpecificTool = ai.dynamicTool(
+  {
+    name: 'getUserData',
+    description: 'Fetch data for the current authenticated user.',
+    inputSchema: z.object({ field: z.string() }),
+    outputSchema: z.string(),
+  },
+  async (input) => {
+    return await db.getUser(currentUserId, input.field);
+  }
+);
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Agents" href="/guides/agents">
+    Build multi-step autonomous agents using tools.
+  </Card>
+  <Card title="Prompts" href="/concepts/prompts">
+    Declare tools inside .prompt files.
+  </Card>
+  <Card title="Models" href="/concepts/models">
+    Learn about all generate() options.
+  </Card>
+  <Card title="Flows" href="/concepts/flows">
+    Wrap tool-using logic in observable, deployable flows.
+  </Card>
+</CardGroup>

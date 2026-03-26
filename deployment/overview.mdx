@@ -1,0 +1,250 @@
+---
+title: "Deployment overview"
+description: "Deploy Genkit flows to any platform that runs Node.js, Python, or Go."
+---
+
+Genkit flows are plain functions. You choose how to expose them over HTTP — either with the built-in flow server or with a framework adapter like Express, Flask, or FastAPI. Once they are wrapped in an HTTP handler they can run anywhere: Cloud Run, Firebase Cloud Functions, Fly.io, AWS, bare-metal servers, or any container platform.
+
+## Two deployment patterns
+
+<CardGroup cols={2}>
+  <Card title="Flow server" icon="server">
+    Zero-config: Genkit automatically wraps every registered flow as a `POST /<flowName>` endpoint. Best when you want to expose all flows quickly.
+  </Card>
+  <Card title="Framework adapter" icon="plug">
+    Mount individual flows inside an existing Express, Flask, FastAPI, or `net/http` app. Best when you need full control over routes, middleware, and auth.
+  </Card>
+</CardGroup>
+
+## Flow server
+
+The flow server is the fastest path to a running HTTP API. Each language has a slightly different API.
+
+<Tabs>
+  <Tab title="Node.js">
+    Use `startFlowServer` from `@genkit-ai/express` to start an Express server that exposes each flow at `POST /<flowName>`.
+
+    ```typescript
+    import { genkit } from 'genkit';
+    import { googleAI } from '@genkit-ai/google-genai';
+    import { startFlowServer } from '@genkit-ai/express';
+
+    const ai = genkit({ plugins: [googleAI()] });
+
+    const menuFlow = ai.defineFlow('menuSuggestion', async (theme: string) => {
+      const { text } = await ai.generate(`Suggest a menu for a ${theme} restaurant.`);
+      return text;
+    });
+
+    startFlowServer({
+      flows: [menuFlow],
+      port: 8080,
+    });
+    ```
+
+    The server reads the `PORT` environment variable if `port` is not set, and defaults to `3400`.
+  </Tab>
+  <Tab title="Python">
+    Use `genkit_flask_handler` from `genkit-flask` or `genkit_fastapi_handler` from `genkit-fastapi` to mount individual flows. For a full app, use the Flask or FastAPI framework directly:
+
+    ```python
+    from flask import Flask
+    from genkit import Genkit
+    from genkit.plugins.flask import genkit_flask_handler
+    from genkit.plugins.google_genai import GoogleAI
+
+    ai = Genkit(plugins=[GoogleAI()], model='googleai/gemini-2.0-flash')
+    app = Flask(__name__)
+
+    @app.post('/menuSuggestion')
+    @genkit_flask_handler(ai)
+    @ai.flow()
+    async def menu_suggestion(theme: str) -> str:
+        response = await ai.generate(prompt=f'Suggest a menu for a {theme} restaurant.')
+        return response.text
+
+    if __name__ == '__main__':
+        app.run(host='0.0.0.0', port=8080)
+    ```
+
+    Alternatively, use FastAPI:
+
+    ```python
+    import uvicorn
+    from fastapi import FastAPI
+    from genkit import Genkit
+    from genkit.plugins.fastapi import genkit_fastapi_handler
+    from genkit.plugins.google_genai import GoogleAI
+
+    ai = Genkit(plugins=[GoogleAI()], model='googleai/gemini-2.0-flash')
+    app = FastAPI()
+
+    @app.post('/menuSuggestion', response_model=None)
+    @genkit_fastapi_handler(ai)
+    @ai.flow()
+    async def menu_suggestion(theme: str) -> str:
+        response = await ai.generate(prompt=f'Suggest a menu for a {theme} restaurant.')
+        return response.text
+
+    if __name__ == '__main__':
+        uvicorn.run(app, host='0.0.0.0', port=8080)
+    ```
+  </Tab>
+  <Tab title="Go">
+    Use `genkit.Handler` and `net/http` directly. There is no separate flow server package — you register handlers on a `http.ServeMux` and call `server.Start`.
+
+    ```go
+    package main
+
+    import (
+        "context"
+        "fmt"
+        "net/http"
+
+        "github.com/firebase/genkit/go/genkit"
+        "github.com/firebase/genkit/go/plugins/googlegenai"
+        "github.com/firebase/genkit/go/plugins/server"
+    )
+
+    func main() {
+        ctx := context.Background()
+        g := genkit.Init(ctx, genkit.WithPlugins(&googlegenai.GoogleAI{}))
+
+        menuFlow := genkit.DefineFlow(g, "menuSuggestion",
+            func(ctx context.Context, theme string) (string, error) {
+                resp, err := genkit.Generate(ctx, g,
+                    ai.WithPrompt(fmt.Sprintf("Suggest a menu for a %s restaurant.", theme)),
+                )
+                if err != nil {
+                    return "", err
+                }
+                return resp.Text(), nil
+            },
+        )
+
+        mux := http.NewServeMux()
+        mux.HandleFunc("POST /menuSuggestion", genkit.Handler(menuFlow))
+
+        server.Start(ctx, ":8080", mux)
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Framework adapter pattern
+
+For more control — custom auth middleware, additional routes, or integration with an existing service — mount flows individually inside a framework you already use.
+
+<Tabs>
+  <Tab title="Node.js (Express)">
+    ```typescript
+    import { expressHandler } from '@genkit-ai/express';
+    import express from 'express';
+    import { UserFacingError } from 'genkit';
+    import type { ContextProvider, RequestData } from 'genkit/context';
+
+    const authProvider: ContextProvider<{ user: string }> = (req: RequestData) => {
+      const token = req.headers['authorization'];
+      if (!token) throw new UserFacingError('UNAUTHENTICATED', 'Missing auth token');
+      return { user: verifyToken(token) };
+    };
+
+    const app = express();
+    app.use(express.json());
+
+    app.post('/menuSuggestion', expressHandler(menuFlow, { contextProvider: authProvider }));
+
+    app.listen(8080);
+    ```
+  </Tab>
+  <Tab title="Python (Flask)">
+    ```python
+    from genkit._core._context import RequestData
+    from genkit.plugins.flask import genkit_flask_handler
+
+    async def auth_provider(request: RequestData) -> dict:
+        token = request.headers.get('authorization')
+        if not token:
+            raise PermissionError('Missing auth token')
+        return {'user': verify_token(token)}
+
+    @app.post('/menuSuggestion')
+    @genkit_flask_handler(ai, context_provider=auth_provider)
+    @ai.flow()
+    async def menu_suggestion(theme: str) -> str:
+        ...
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import "github.com/firebase/genkit/go/genkit"
+
+    mux.HandleFunc("POST /menuSuggestion",
+        genkit.Handler(menuFlow,
+            genkit.WithContextProviders(
+                func(ctx context.Context, req core.RequestData) (api.ActionContext, error) {
+                    token := req.Headers["authorization"]
+                    if token == "" {
+                        return nil, core.NewPublicError(core.UNAUTHENTICATED, "missing token", nil)
+                    }
+                    return api.ActionContext{"user": verifyToken(token)}, nil
+                },
+            ),
+        ),
+    )
+    ```
+  </Tab>
+</Tabs>
+
+## Disabling the dev reflection server in production
+
+In development, Genkit starts a local reflection API server on port `4000` (used by the Dev UI). This server **must not run in production**.
+
+<Warning>
+Never run the Genkit reflection server (`GENKIT_ENV=dev`) in a production deployment. It exposes an unauthenticated API for inspecting and invoking all registered flows and actions.
+</Warning>
+
+Set the environment variable before starting your server:
+
+```bash
+export GENKIT_ENV=production
+```
+
+In Python and Go the reflection server is only started automatically when `GENKIT_ENV=dev`; removing that variable is sufficient.
+
+## Wire format
+
+Every flow — regardless of language — accepts and returns a consistent JSON envelope:
+
+```json
+// Request
+{ "data": <your flow input> }
+
+// Response
+{ "result": <your flow output> }
+```
+
+Streaming responses use server-sent events:
+
+```
+data: {"message": <chunk>}
+data: {"message": <chunk>}
+data: {"result": <final output>}
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Firebase Cloud Functions" icon="fire" href="/deployment/firebase">
+    Deploy flows as HTTPS callable Firebase Functions.
+  </Card>
+  <Card title="Cloud Run" icon="cloud" href="/deployment/cloud-run">
+    Run containerised Genkit apps on Google Cloud Run.
+  </Card>
+  <Card title="Observability" icon="chart-line" href="/deployment/observability">
+    Traces, metrics, and logs for production Genkit apps.
+  </Card>
+  <Card title="Flows" icon="bolt" href="/concepts/flows">
+    Learn how flows work and how to define them.
+  </Card>
+</CardGroup>

@@ -1,0 +1,170 @@
+---
+title: "JavaScript / TypeScript quickstart"
+description: "Get up and running with Genkit in JavaScript or TypeScript in under five minutes using Gemini models via the Google AI plugin."
+---
+
+This guide walks you through installing Genkit, writing your first AI-powered function, and exploring it with the local Developer UI.
+
+<Steps>
+
+<Step title="Get a Google AI API key">
+
+Genkit's Google AI plugin uses the Gemini API. Get a free API key from [Google AI Studio](https://aistudio.google.com/apikey).
+
+<Note>
+Set the key as an environment variable before running any Genkit code:
+
+```bash
+export GOOGLE_GENAI_API_KEY="your-api-key"
+```
+
+The plugin also accepts `GEMINI_API_KEY` and `GOOGLE_API_KEY`. You can alternatively pass the key directly as `googleAI({ apiKey: '...' })`, but using an environment variable is recommended so credentials are never committed to source control.
+</Note>
+
+</Step>
+
+<Step title="Install dependencies">
+
+Create a new Node.js project (or open an existing one), then install Genkit and the Google AI plugin:
+
+<CodeGroup>
+
+```bash npm
+npm install genkit @genkit-ai/google-genai
+```
+
+```bash yarn
+yarn add genkit @genkit-ai/google-genai
+```
+
+```bash pnpm
+pnpm add genkit @genkit-ai/google-genai
+```
+
+</CodeGroup>
+
+Install the Genkit CLI globally so you can use the Developer UI:
+
+```bash
+npm install -g genkit-cli
+```
+
+</Step>
+
+<Step title="Write your first Genkit app">
+
+Create `src/index.ts` with the following content:
+
+```typescript
+import { genkit } from 'genkit';
+import { googleAI } from '@genkit-ai/google-genai';
+
+// Initialize Genkit with the Google AI plugin.
+// The plugin reads GOOGLE_GENAI_API_KEY (or GEMINI_API_KEY) from the environment.
+const ai = genkit({
+  plugins: [googleAI()],
+});
+
+// Define a flow — a traced, deployable AI function.
+const jokeFlow = ai.defineFlow('tellJoke', async (topic: string) => {
+  const { text } = await ai.generate({
+    model: googleAI.model('gemini-2.5-flash'),
+    prompt: `Tell me a short joke about ${topic}.`,
+  });
+  return text;
+});
+
+// Run the flow directly when executed as a script.
+const joke = await jokeFlow('software engineers');
+console.log(joke);
+```
+
+Run it with `tsx` (or compile with `tsc` first):
+
+```bash
+npx tsx src/index.ts
+```
+
+</Step>
+
+<Step title="Explore with the Developer UI">
+
+The Genkit CLI wraps your app with tracing and launches a local Developer UI where you can run flows, inspect execution traces, and compare model outputs interactively.
+
+```bash
+genkit start -- npx tsx src/index.ts
+```
+
+The CLI starts your app, then opens the Developer UI at `http://localhost:4000`. In the UI you can:
+
+- **Run** the `tellJoke` flow against any input without touching your code.
+- **Inspect traces** to see exactly what was sent to and received from the model.
+- **Tweak prompts** and compare outputs across different Gemini model variants.
+
+<Tip>
+Set `GENKIT_ENV=dev` in your environment to keep the reflection server running even outside the `genkit start` command, which is useful during active development.
+</Tip>
+
+</Step>
+
+<Step title="Add structured output (optional)">
+
+Genkit can validate model responses against a Zod schema and return typed objects:
+
+```typescript
+import { z } from 'genkit';
+
+const RecipeSchema = z.object({
+  title: z.string(),
+  ingredients: z.array(z.string()),
+  steps: z.array(z.string()),
+});
+
+const recipeFlow = ai.defineFlow(
+  { name: 'generateRecipe', outputSchema: RecipeSchema },
+  async (dish: string) => {
+    const { output } = await ai.generate({
+      model: googleAI.model('gemini-2.5-flash'),
+      prompt: `Create a recipe for ${dish}.`,
+      output: { schema: RecipeSchema },
+    });
+    return output!;
+  }
+);
+
+const recipe = await recipeFlow('chocolate chip cookies');
+console.log(recipe.title, recipe.ingredients);
+```
+
+</Step>
+
+</Steps>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Concepts: Flows" icon="arrows-split-up-and-left" href="/concepts/flows">
+    Learn how flows add observability, retries, and HTTP exposure to any AI function.
+  </Card>
+  <Card title="Concepts: Models" icon="microchip" href="/concepts/models">
+    Understand model references, config options, multimodal inputs, and streaming.
+  </Card>
+  <Card title="Guides: Structured output" icon="brackets-curly" href="/guides/structured-output">
+    Return validated, type-safe JSON from any model call using Zod schemas.
+  </Card>
+  <Card title="Guides: Streaming" icon="wave-square" href="/guides/streaming">
+    Stream tokens to the client as they are generated for a faster perceived response.
+  </Card>
+  <Card title="Guides: Agents" icon="robot" href="/guides/agents">
+    Build multi-step agentic workflows with tool calling and looping.
+  </Card>
+  <Card title="Plugins: Google AI" icon="google" href="/plugins/google-genai">
+    Full reference for the `@genkit-ai/google-genai` plugin including Vertex AI, Imagen, and embeddings.
+  </Card>
+  <Card title="Plugins overview" icon="puzzle-piece" href="/plugins/overview">
+    Browse all available plugins: Vertex AI, Ollama, Firebase, and community providers.
+  </Card>
+  <Card title="Developer tools" icon="terminal" href="/guides/devtools">
+    Deep dive into the Genkit CLI and Developer UI.
+  </Card>
+</CardGroup>

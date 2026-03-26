@@ -1,0 +1,288 @@
+---
+title: "Structured output"
+description: "Get typed, validated JSON responses from AI models using schemas defined in TypeScript, Python, or Go."
+---
+
+Instead of parsing free-form text, you can ask a model to return data that matches a specific structure. Genkit validates the output against your schema and automatically retries if the model returns invalid JSON.
+
+## How it works
+
+When you pass an `output.schema` to `generate()`, Genkit:
+
+1. Injects instructions into the prompt telling the model to respond in JSON matching the schema.
+2. Parses the model response and extracts the JSON.
+3. Validates the parsed value against the schema.
+4. Retries the request (up to `maxTurns` times) if validation fails.
+
+The validated object is then available on `response.output`.
+
+## Basic example
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```typescript
+    import { genkit, z } from 'genkit';
+    import { googleAI } from '@genkit-ai/google-genai';
+
+    const ai = genkit({ plugins: [googleAI()], model: 'googleai/gemini-2.0-flash' });
+
+    const RecipeSchema = z.object({
+      name: z.string(),
+      ingredients: z.array(z.string()),
+      steps: z.array(z.string()),
+      prepTimeMinutes: z.number(),
+    });
+
+    const response = await ai.generate({
+      prompt: 'Give me a recipe for chocolate chip cookies.',
+      output: {
+        schema: RecipeSchema,
+      },
+    });
+
+    // response.output is typed as z.infer<typeof RecipeSchema>
+    const recipe = response.output;
+    console.log(recipe.name);           // "Classic Chocolate Chip Cookies"
+    console.log(recipe.prepTimeMinutes); // 20
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from pydantic import BaseModel
+    from genkit import Genkit
+    from genkit.plugins.google_genai import GoogleAI
+
+    ai = Genkit(plugins=[GoogleAI()])
+
+    class Recipe(BaseModel):
+        name: str
+        ingredients: list[str]
+        steps: list[str]
+        prep_time_minutes: int
+
+    response = await ai.generate(
+        prompt='Give me a recipe for chocolate chip cookies.',
+        output_schema=Recipe,
+    )
+
+    recipe = response.output  # Typed as Recipe
+    print(recipe.name)
+    print(recipe.prep_time_minutes)
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    package main
+
+    import (
+        "context"
+        "fmt"
+        "log"
+
+        "github.com/firebase/genkit/go/ai"
+        "github.com/firebase/genkit/go/genkit"
+        "github.com/firebase/genkit/go/plugins/googlegenai"
+    )
+
+    type Recipe struct {
+        Name            string   `json:"name"`
+        Ingredients     []string `json:"ingredients"`
+        Steps           []string `json:"steps"`
+        PrepTimeMinutes int      `json:"prepTimeMinutes"`
+    }
+
+    func main() {
+        ctx := context.Background()
+        g := genkit.Init(ctx,
+            genkit.WithPlugins(&googlegenai.GoogleAI{}),
+            genkit.WithDefaultModel("googleai/gemini-2.0-flash"),
+        )
+
+        resp, err := genkit.Generate(ctx, g,
+            ai.WithPrompt("Give me a recipe for chocolate chip cookies."),
+            ai.WithOutputType(Recipe{}),
+        )
+        if err != nil {
+            log.Fatal(err)
+        }
+
+        var recipe Recipe
+        if err := resp.Output(&recipe); err != nil {
+            log.Fatal(err)
+        }
+        fmt.Println(recipe.Name)
+        fmt.Println(recipe.PrepTimeMinutes)
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Output formats
+
+The `output.format` field controls how Genkit instructs the model to format its response. Available formats:
+
+| Format | Description |
+|--------|-------------|
+| `json` | A single JSON object (default when a schema is provided). |
+| `text` | Plain text (default when no schema is provided). |
+| `array` | A JSON array of objects. |
+| `enum` | One of a fixed set of string values. |
+| `jsonl` | Newline-delimited JSON (useful for streaming structured data). |
+
+### Enum output
+
+Use `format: 'enum'` to constrain a response to one of a specific set of values:
+
+```typescript
+const SentimentSchema = z.enum(['positive', 'negative', 'neutral']);
+
+const response = await ai.generate({
+  prompt: 'The food was cold and the service was slow.',
+  output: {
+    schema: SentimentSchema,
+    format: 'enum',
+  },
+});
+
+console.log(response.output); // "negative"
+```
+
+### Array output
+
+Use `format: 'array'` to request a JSON array. Pair it with a Zod array schema:
+
+```typescript
+const TagListSchema = z.array(z.string());
+
+const response = await ai.generate({
+  prompt: 'List 5 keywords for a blog post about async JavaScript.',
+  output: {
+    schema: TagListSchema,
+    format: 'array',
+  },
+});
+
+console.log(response.output); // ["async", "await", "promises", "event loop", "callbacks"]
+```
+
+## Constrained generation
+
+Some models support _native_ constrained generation — the model is instructed at the inference level to only produce tokens that are valid for the given schema. This is more reliable than prompt-based instructions.
+
+Set `output.constrained: true` to enable it when available:
+
+```typescript
+const response = await ai.generate({
+  prompt: 'Extract the order details from this receipt: ...',
+  output: {
+    schema: OrderSchema,
+    constrained: true,
+  },
+});
+```
+
+<Note>
+Not all models support constrained generation. Genkit falls back to prompt-based instructions when the model does not support it. You can check `model.supports.constrained` to see what a model supports.
+</Note>
+
+## Extracting structured data from text
+
+A common use case is extracting structured data from unstructured input such as an email, document, or web page.
+
+```typescript
+const ContactSchema = z.object({
+  name: z.string(),
+  email: z.string().email().optional(),
+  phone: z.string().optional(),
+  company: z.string().optional(),
+});
+
+const emailText = `
+  Hi, I'm Sarah Connor from Cyberdyne Systems.
+  Reach me at sarah@cyberdyne.com or 555-0100.
+`;
+
+const response = await ai.generate({
+  prompt: `Extract the contact information from the following text:\n${emailText}`,
+  output: {
+    schema: ContactSchema,
+  },
+});
+
+console.log(response.output);
+// {
+//   name: "Sarah Connor",
+//   email: "sarah@cyberdyne.com",
+//   phone: "555-0100",
+//   company: "Cyberdyne Systems"
+// }
+```
+
+## Accessing the output
+
+The `GenerateResponse` object exposes several accessors:
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `response.output` | `T \| null` | The validated structured output. `null` if parsing failed. |
+| `response.text` | `string` | Raw text from the model (all text parts concatenated). |
+| `response.data` | `T \| null` | The first `data` part of the message (for models that return typed data natively). |
+| `response.message` | `Message` | The full generated message object. |
+
+## Schema validation and retries
+
+Genkit calls `response.assertValidSchema()` internally. If the model returns output that fails schema validation, Genkit throws a `GenkitError`. You can call `response.isValid()` to check without throwing:
+
+```typescript
+const response = await ai.generate({
+  prompt: '...',
+  output: { schema: MySchema },
+});
+
+if (!response.isValid()) {
+  // Handle invalid output
+  console.error('Model returned invalid output');
+} else {
+  const data = response.output!;
+}
+```
+
+<Tip>
+For more reliable structured output, use Gemini models with `constrained: true`. These models support native JSON mode and are less likely to produce invalid output.
+</Tip>
+
+## Using schemas in flows
+
+Structured output works inside flows just like it does in standalone `generate()` calls. Define the flow's output schema with Zod and use it in the generate call:
+
+```typescript
+const extractContactFlow = ai.defineFlow(
+  {
+    name: 'extractContact',
+    inputSchema: z.string(),
+    outputSchema: ContactSchema,
+  },
+  async (text) => {
+    const response = await ai.generate({
+      prompt: `Extract contact info from: ${text}`,
+      output: { schema: ContactSchema },
+    });
+    return response.output!;
+  }
+);
+```
+
+<CardGroup cols={2}>
+  <Card title="Streaming" icon="radio" href="/guides/streaming">
+    Stream structured output chunks as they arrive.
+  </Card>
+  <Card title="Flows" icon="rectangle-code" href="/concepts/flows">
+    Wrap generate calls in type-safe, observable flows.
+  </Card>
+  <Card title="Prompts" icon="file-text" href="/concepts/prompts">
+    Define output schemas in .prompt files.
+  </Card>
+  <Card title="Models" icon="cpu" href="/concepts/models">
+    See which models support constrained generation.
+  </Card>
+</CardGroup>

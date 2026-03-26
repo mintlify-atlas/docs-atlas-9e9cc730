@@ -1,0 +1,289 @@
+---
+title: "Multimodal input"
+description: "Send images, audio, video, and other media to models that support multimodal input."
+---
+
+Multimodal models can accept both text and non-text content — images, audio, video, and documents — as part of a single prompt. Genkit uses a unified `Part` type to represent all content, making it straightforward to mix text and media in the same message.
+
+## The `MediaPart` type
+
+Non-text content is represented as a `MediaPart`:
+
+```typescript
+// Structure of a MediaPart
+{
+  media: {
+    url: string;         // A URL or a base64 data URI
+    contentType?: string; // MIME type, e.g. "image/png", "audio/mp3"
+  }
+}
+```
+
+A prompt is an array of `Part` objects. Each part is either a `TextPart` (`{ text: string }`) or a `MediaPart`.
+
+## Images
+
+### From a URL
+
+Pass a publicly accessible image URL directly:
+
+```typescript
+import { genkit } from 'genkit';
+import { googleAI } from '@genkit-ai/google-genai';
+
+const ai = genkit({ plugins: [googleAI()], model: 'googleai/gemini-2.0-flash' });
+
+const response = await ai.generate({
+  prompt: [
+    { media: { url: 'https://example.com/photo.jpg', contentType: 'image/jpeg' } },
+    { text: 'Describe what you see in this image.' },
+  ],
+});
+
+console.log(response.text);
+```
+
+### From a base64-encoded buffer
+
+For local files or dynamically loaded images, encode the content as a base64 data URI:
+
+```typescript
+import { readFileSync } from 'fs';
+
+const imageData = readFileSync('./photo.jpg');
+const base64Image = imageData.toString('base64');
+
+const response = await ai.generate({
+  prompt: [
+    {
+      media: {
+        url: `data:image/jpeg;base64,${base64Image}`,
+        contentType: 'image/jpeg',
+      },
+    },
+    { text: 'What objects are in this image?' },
+  ],
+});
+```
+
+### Shorthand for multipart arrays
+
+You can also pass the parts array directly to `ai.generate()`:
+
+```typescript
+const response = await ai.generate([
+  { media: { url: 'https://example.com/chart.png' } },
+  { text: 'Summarize the trend shown in this chart.' },
+]);
+```
+
+## Python example
+
+```python
+from genkit import Genkit
+from genkit.plugins.google_genai import GoogleAI
+import base64
+
+ai = Genkit(plugins=[GoogleAI()])
+
+# From a URL
+response = await ai.generate(
+    prompt=[
+        {'media': {'url': 'https://example.com/photo.jpg', 'content_type': 'image/jpeg'}},
+        {'text': 'Describe what you see in this image.'},
+    ]
+)
+print(response.text)
+
+# From a local file
+with open('./photo.jpg', 'rb') as f:
+    image_b64 = base64.b64encode(f.read()).decode()
+
+response = await ai.generate(
+    prompt=[
+        {'media': {'url': f'data:image/jpeg;base64,{image_b64}', 'content_type': 'image/jpeg'}},
+        {'text': 'What objects are visible?'},
+    ]
+)
+```
+
+## Go example
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+    "log"
+    "os"
+    "encoding/base64"
+
+    "github.com/firebase/genkit/go/ai"
+    "github.com/firebase/genkit/go/genkit"
+    "github.com/firebase/genkit/go/plugins/googlegenai"
+)
+
+func main() {
+    ctx := context.Background()
+    g := genkit.Init(ctx,
+        genkit.WithPlugins(&googlegenai.GoogleAI{}),
+        genkit.WithDefaultModel("googleai/gemini-2.0-flash"),
+    )
+
+    // From a URL
+    resp, err := genkit.Generate(ctx, g,
+        ai.WithPromptParts(
+            ai.NewMediaPart("image/jpeg", "https://example.com/photo.jpg"),
+            ai.NewTextPart("Describe what you see in this image."),
+        ),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println(resp.Text())
+
+    // From a local file
+    data, _ := os.ReadFile("./photo.jpg")
+    encoded := base64.StdEncoding.EncodeToString(data)
+
+    resp, err = genkit.Generate(ctx, g,
+        ai.WithPromptParts(
+            ai.NewMediaPart("image/jpeg", "data:image/jpeg;base64,"+encoded),
+            ai.NewTextPart("What objects are visible?"),
+        ),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Println(resp.Text())
+}
+```
+
+## Audio input
+
+Models that support audio input (such as Gemini 1.5 Pro and later) accept audio files using the same `MediaPart` structure:
+
+```typescript
+const audioData = readFileSync('./meeting.mp3');
+const base64Audio = audioData.toString('base64');
+
+const response = await ai.generate({
+  model: 'googleai/gemini-2.0-flash',
+  prompt: [
+    {
+      media: {
+        url: `data:audio/mp3;base64,${base64Audio}`,
+        contentType: 'audio/mp3',
+      },
+    },
+    { text: 'Transcribe this audio and summarize the key points.' },
+  ],
+});
+```
+
+## Video input
+
+Video is supported via URL or base64, with the same approach. Large video files are best referenced by URL:
+
+```typescript
+const response = await ai.generate({
+  model: 'googleai/gemini-2.0-flash',
+  prompt: [
+    {
+      media: {
+        url: 'https://storage.googleapis.com/my-bucket/demo.mp4',
+        contentType: 'video/mp4',
+      },
+    },
+    { text: 'Give me a chapter breakdown of this video.' },
+  ],
+});
+```
+
+## PDF and document input
+
+Gemini models can also process PDF documents:
+
+```typescript
+const pdfData = readFileSync('./report.pdf');
+const base64Pdf = pdfData.toString('base64');
+
+const response = await ai.generate({
+  model: 'googleai/gemini-2.0-flash',
+  prompt: [
+    {
+      media: {
+        url: `data:application/pdf;base64,${base64Pdf}`,
+        contentType: 'application/pdf',
+      },
+    },
+    { text: 'Summarize the executive summary section of this report.' },
+  ],
+});
+```
+
+## Model capabilities
+
+Not all models support multimodal input. Each model exposes its capabilities in the `ModelInfo.supports` metadata:
+
+```typescript
+// Check if a model supports media input
+const modelRef = googleAI.model('gemini-2.0-flash');
+console.log(modelRef.info?.supports?.media); // true
+```
+
+The `supports` object includes:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `media` | `boolean` | Can process images, audio, video, documents. |
+| `multiturn` | `boolean` | Can process conversation history. |
+| `tools` | `boolean` | Can call tools. |
+| `systemRole` | `boolean` | Accepts a system message. |
+| `output` | `string[]` | Supported output types (e.g., `["text", "media"]`). |
+| `contentType` | `string[]` | Accepted MIME types for media input. |
+
+<Note>
+Multimodal support depends on the model. Gemini 1.5 and 2.x models support images, audio, video, and PDF input. Older or text-only models will return an error if media parts are included in the prompt. Check the plugin documentation for the specific model you are using.
+</Note>
+
+## Combining multimodal input with structured output
+
+You can combine multimodal input with structured output to extract typed data from images:
+
+```typescript
+import { z } from 'genkit';
+
+const ProductSchema = z.object({
+  name: z.string(),
+  price: z.number().optional(),
+  brand: z.string().optional(),
+  description: z.string(),
+});
+
+const response = await ai.generate({
+  prompt: [
+    { media: { url: 'https://example.com/product.jpg' } },
+    { text: 'Extract the product details from this image.' },
+  ],
+  output: { schema: ProductSchema },
+});
+
+console.log(response.output); // { name: '...', price: 29.99, ... }
+```
+
+<CardGroup cols={2}>
+  <Card title="Structured output" icon="braces" href="/guides/structured-output">
+    Extract typed data from images or documents.
+  </Card>
+  <Card title="Google GenAI plugin" icon="google" href="/plugins/google-genai">
+    Gemini model capabilities and configuration.
+  </Card>
+  <Card title="Models" icon="cpu" href="/concepts/models">
+    How model capability metadata works.
+  </Card>
+  <Card title="Streaming" icon="radio" href="/guides/streaming">
+    Stream multimodal responses.
+  </Card>
+</CardGroup>

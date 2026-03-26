@@ -1,0 +1,246 @@
+---
+title: "Sessions"
+description: "Persist multi-turn conversation state across requests with sessions and chat threads."
+---
+
+A **session** is a container for persistent conversation state. Where a plain `ai.generate()` call is stateless, a session automatically accumulates conversation history across multiple `send()` calls—you never need to manually pass `messages` back and forth.
+
+Sessions also support multiple independent **threads** within a single session context, so you can run parallel conversations (e.g., a main conversation thread and a side-channel for tool confirmations) under one session ID.
+
+## Creating a session and chatting
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    import { genkit } from 'genkit';
+    import { googleAI } from '@genkit-ai/google-genai';
+
+    const ai = genkit({
+      plugins: [googleAI()],
+      model: 'googleai/gemini-2.5-flash',
+    });
+
+    // Create a session
+    const session = ai.createSession();
+
+    // Open a chat thread within the session
+    const chat = session.chat();
+
+    // First turn
+    let response = await chat.send('Hi! My name is Alex.');
+    console.log(response.text); // → "Hi Alex! Nice to meet you!"
+
+    // Second turn — the model remembers earlier context
+    response = await chat.send('What is my name?');
+    console.log(response.text); // → "Your name is Alex."
+
+    // Inspect the full history at any time
+    console.log(chat.messages);
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    // Go sessions are typically managed manually via message history.
+    // Pass accumulated messages in each generate call:
+    var history []*ai.Message
+
+    resp, err := genkit.Generate(ctx, g,
+        ai.WithModel("googleai/gemini-2.5-flash"),
+        ai.WithMessages(history...),
+        ai.WithPrompt("Hi! My name is Alex."),
+    )
+    if err != nil {
+        log.Fatal(err)
+    }
+    // Append assistant response to history for next turn
+    history = resp.Messages
+    fmt.Println(resp.Text())
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from genkit import Genkit
+    from genkit.plugins.google_genai import GoogleAI
+
+    ai = Genkit(plugins=[GoogleAI()])
+
+    # Create a session
+    session = ai.create_session()
+
+    # Open a chat thread
+    chat = session.chat()
+
+    # First turn
+    response = await chat.send('Hi! My name is Alex.')
+    print(response.text)  # → "Hi Alex! Nice to meet you!"
+
+    # Second turn — model remembers the name
+    response = await chat.send('What is my name?')
+    print(response.text)  # → "Your name is Alex."
+    ```
+  </Tab>
+</Tabs>
+
+## Sessions vs. plain `generate()`
+
+| | `ai.generate()` | Session + chat |
+|---|---|---|
+| State | Stateless — you manage history | Stateful — history managed automatically |
+| History passing | Must pass `messages` manually | Accumulated inside the `Chat` object |
+| Best for | Single-turn, one-shot tasks | Multi-turn conversations |
+| Persistence | None built-in | Pluggable via `SessionStore` |
+
+## System prompts in sessions
+
+Set a system prompt (persona, instructions, constraints) when creating the chat. It is injected automatically at the start of every request:
+
+```ts
+const chat = session.chat({
+  system: 'You are a friendly pirate. Always respond in pirate speak.',
+});
+
+const response = await chat.send('Tell me a joke.');
+// → "Arrr, why don't pirates shower before they walk the plank? Because..."
+```
+
+## Multi-thread sessions
+
+A session can hold multiple independent conversation threads. Each thread has its own message history:
+
+```ts
+const session = ai.createSession();
+
+// Two separate threads — each with its own persona and history
+const techChat = session.chat('techThread', {
+  system: 'You are a senior software engineer. Speak technically.',
+});
+const simpleChat = session.chat('simpleThread', {
+  system: 'You explain things to a five-year-old.',
+});
+
+await techChat.send('What is a mutex?');
+await simpleChat.send('What is a mutex?');
+// Each thread answers with its own persona and maintains separate histories
+```
+
+## Prompts as preambles
+
+You can initialize a chat thread with a Dotprompt, which acts as a reusable preamble:
+
+```ts
+const triageAgent = ai.definePrompt({
+  name: 'triageAgent',
+  model: 'googleai/gemini-2.5-flash',
+  system: 'You are a customer support triage agent. '
+    + 'Classify the user\'s issue and collect relevant details.',
+});
+
+const session = ai.createSession();
+const chat = session.chat(triageAgent);
+
+const response = await chat.send('My internet connection keeps dropping.');
+```
+
+## Streaming chat
+
+Use `chat.sendStream()` to stream the response token-by-token:
+
+```ts
+const { response, stream } = chat.sendStream('Tell me a long story about a robot.');
+
+for await (const chunk of stream) {
+  process.stdout.write(chunk.text);
+}
+
+const finalResponse = await response;
+console.log('\nDone. Total tokens:', finalResponse.usage?.totalTokens);
+```
+
+## Persisting sessions
+
+By default, session state is kept in memory and lost when the process restarts. For production multi-user applications, plug in a persistent store:
+
+```ts
+import { firestoreSessionStore } from '@genkit-ai/firebase';
+
+const session = ai.createSession({
+  sessionId: req.headers['x-session-id'], // load an existing session
+  store: firestoreSessionStore(),          // persists to Firestore
+});
+```
+
+You can also write your own store by implementing the `SessionStore` interface:
+
+```ts
+const redisStore: SessionStore = {
+  async get(sessionId) {
+    const raw = await redis.get(`session:${sessionId}`);
+    return raw ? JSON.parse(raw) : undefined;
+  },
+  async save(sessionId, data) {
+    await redis.set(`session:${sessionId}`, JSON.stringify(data));
+  },
+};
+
+const session = ai.createSession({ store: redisStore });
+```
+
+## Session state
+
+Sessions can carry arbitrary typed state alongside conversation history. This is useful for tracking things like a user's preferences, shopping cart, or workflow step:
+
+```ts
+interface UserState {
+  preferredLanguage: string;
+  creditBalance: number;
+}
+
+const session = ai.createSession<UserState>({
+  initialState: { preferredLanguage: 'en', creditBalance: 100 },
+});
+
+// Read state anywhere inside the session
+console.log(session.state?.creditBalance); // 100
+
+// Update state
+await session.updateState({ preferredLanguage: 'fr', creditBalance: 90 });
+```
+
+## Reading message history
+
+The full conversation history is available on the `chat.messages` property. Each entry is a `MessageData` object with `role` and `content`:
+
+```ts
+const chat = session.chat();
+await chat.send('Hello!');
+await chat.send('Tell me about Genkit.');
+
+for (const msg of chat.messages) {
+  console.log(`[${msg.role}]`, msg.content.map((p) => p.text).join(''));
+}
+// [user]  Hello!
+// [model] Hi there! How can I help you today?
+// [user]  Tell me about Genkit.
+// [model] Genkit is an open-source AI framework...
+```
+
+<Note>
+  Message history includes both user messages and model responses. Tool call messages are also recorded in the history when tools are used.
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Tools" href="/concepts/tools">
+    Tools work seamlessly inside chat sessions.
+  </Card>
+  <Card title="Streaming" href="/guides/streaming">
+    Stream responses in real time with `sendStream()`.
+  </Card>
+  <Card title="Firebase Deployment" href="/deployment/firebase">
+    Deploy session-aware flows to Firebase.
+  </Card>
+  <Card title="Agents" href="/guides/agents">
+    Build persistent agents that maintain state across turns.
+  </Card>
+</CardGroup>

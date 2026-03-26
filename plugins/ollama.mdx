@@ -1,0 +1,324 @@
+---
+title: "Ollama plugin"
+description: "Run Llama, Mistral, Gemma, Phi, and hundreds of other open-source models locally through Ollama — no cloud account required."
+---
+
+The Ollama plugin connects Genkit to an [Ollama](https://ollama.com) server running on your machine or a private host. This enables **fully local, private AI inference** — your data never leaves your network.
+
+Use cases:
+- Development and testing without API costs or rate limits
+- Privacy-sensitive applications where data cannot leave the premises
+- Air-gapped environments
+- Comparing open-source models against hosted ones within the same flow
+
+## Prerequisites
+
+<Steps>
+  <Step title="Install Ollama">
+    Download and install Ollama from [ollama.com](https://ollama.com/download). The Ollama server starts automatically and listens on `http://localhost:11434`.
+  </Step>
+  <Step title="Pull a model">
+    ```bash
+    # Pull Llama 3.2 (3B, good for most tasks)
+    ollama pull llama3.2
+
+    # Pull Gemma 3 (Google's open-weight model)
+    ollama pull gemma3:4b
+
+    # Pull a multimodal model
+    ollama pull llava
+
+    # Pull an embedding model
+    ollama pull nomic-embed-text
+    ```
+
+    Run `ollama list` to see what you have installed.
+  </Step>
+  <Step title="Verify the server is running">
+    ```bash
+    curl http://localhost:11434/api/tags
+    ```
+  </Step>
+</Steps>
+
+## Installation
+
+<Tabs>
+  <Tab title="TypeScript">
+    <CodeGroup>
+      ```bash npm
+      npm install @genkit-ai/ollama
+      ```
+      ```bash pnpm
+      pnpm add @genkit-ai/ollama
+      ```
+    </CodeGroup>
+  </Tab>
+  <Tab title="Go">
+    ```bash
+    go get github.com/firebase/genkit/go/plugins/ollama
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```bash
+    pip install genkit-ollama-plugin
+    ```
+  </Tab>
+</Tabs>
+
+## Configuration
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    import { genkit } from 'genkit';
+    import { ollama } from '@genkit-ai/ollama';
+
+    const ai = genkit({
+      plugins: [
+        ollama({
+          // Defaults to http://localhost:11434
+          serverAddress: 'http://localhost:11434',
+
+          // Optional: pre-declare specific models
+          models: [
+            { name: 'llama3.2' },
+            { name: 'gemma3:4b' },
+            // Multimodal model
+            { name: 'llava' },
+            // Model that supports tool calling
+            { name: 'mistral', supports: { tools: true } },
+          ],
+
+          // Optional: pre-declare embedding models
+          embedders: [
+            { name: 'nomic-embed-text', dimensions: 768 },
+          ],
+        }),
+      ],
+    });
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import (
+      "github.com/firebase/genkit/go/genkit"
+      "github.com/firebase/genkit/go/plugins/ollama"
+    )
+
+    g := genkit.Init(ctx,
+      genkit.WithPlugins(&ollama.Ollama{
+        ServerAddress: "http://localhost:11434",
+        Timeout:       30, // seconds
+      }),
+    )
+
+    // After Init, define the models you want to use
+    llamaModel := ollamaPlugin.DefineModel(g, ollama.ModelDefinition{
+      Name: "llama3.2",
+      Type: "chat",
+    }, nil)
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from genkit import Genkit
+    from genkit.plugins.ollama import Ollama
+    from genkit.plugins.ollama.models import ModelDefinition
+    from genkit.plugins.ollama.embedders import EmbeddingDefinition
+
+    ai = Genkit(
+        plugins=[
+            Ollama(
+                models=[
+                    ModelDefinition(name='llama3.2'),
+                    ModelDefinition(name='gemma3:4b'),
+                ],
+                embedders=[
+                    EmbeddingDefinition(name='nomic-embed-text', dimensions=768),
+                ],
+                server_address='http://localhost:11434',
+            )
+        ]
+    )
+    ```
+  </Tab>
+</Tabs>
+
+### Plugin options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `serverAddress` | `string` | `http://localhost:11434` | URL of the Ollama server. |
+| `models` | `ModelDefinition[]` | `[]` | Models to pre-register. If omitted, any locally-pulled model is auto-discovered. |
+| `embedders` | `EmbeddingModelDefinition[]` | `[]` | Embedding models to register. Must specify `dimensions` as the Ollama API does not expose this. |
+| `requestHeaders` | `Record\<string, string\> \| function` | — | Static or dynamic headers added to every request. Useful for authentication when Ollama runs behind a proxy. |
+
+## Generating text
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    // Reference a model by name — it must be pulled in Ollama first
+    const response = await ai.generate({
+      model: ollama.model('llama3.2'),
+      prompt: 'Write a haiku about compilers.',
+    });
+
+    console.log(response.text);
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    resp, err := genkit.Generate(ctx, g,
+      ai.WithModelName("ollama/llama3.2"),
+      ai.WithPrompt("Write a haiku about compilers."),
+    )
+    fmt.Println(resp.Text())
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    response = await ai.generate(
+        model='ollama/llama3.2',
+        prompt='Write a haiku about compilers.',
+    )
+    print(response.text)
+    ```
+  </Tab>
+</Tabs>
+
+## Dynamic model resolution
+
+If you don't pre-declare models in the plugin config, Genkit will ask Ollama to resolve the model on first use — provided it is already pulled:
+
+```ts
+// Works as long as `ollama pull mistral` has been run
+const response = await ai.generate({
+  model: ollama.model('mistral'),
+  prompt: 'Explain the halting problem.',
+});
+```
+
+<Note>
+Embedding models must be declared upfront with their `dimensions` value because the Ollama API does not expose dimensionality metadata. Models can be resolved dynamically.
+</Note>
+
+## Model configuration
+
+Pass generation options directly:
+
+```ts
+const response = await ai.generate({
+  model: ollama.model('llama3.2', {
+    temperature: 0.6,
+    topK: 40,
+    topP: 0.9,
+    maxOutputTokens: 512,
+  }),
+  prompt: 'Summarise the following article in two sentences.',
+});
+```
+
+## Embeddings
+
+```ts
+const embeddings = await ai.embed({
+  embedder: ollama.embedder('nomic-embed-text'),
+  content: 'Store this document for later retrieval.',
+});
+// embeddings[0].embedding → number[] of length 768
+```
+
+<Tip>
+Combine the Ollama embedder with `@genkit-ai/dev-local-vectorstore` for a fully local RAG pipeline with no external dependencies.
+</Tip>
+
+## Multi-turn chat
+
+```ts
+const session = ai.createSession();
+const chat = session.chat({ model: ollama.model('llama3.2') });
+
+const r1 = await chat.send('Hello! My name is Alice.');
+const r2 = await chat.send('What is my name?');
+console.log(r2.text()); // "Your name is Alice."
+```
+
+## Function calling (tools)
+
+Several Ollama models support OpenAI-compatible tool calling. The plugin
+automatically enables tools for known-compatible models (Llama 3.1/3.2, Mistral,
+Qwen 2.5, Phi-4, and others):
+
+```ts
+const calculator = ai.defineTool(
+  {
+    name: 'calculate',
+    description: 'Evaluates a mathematical expression.',
+    inputSchema: z.object({ expression: z.string() }),
+    outputSchema: z.number(),
+  },
+  async ({ expression }) => eval(expression) as number
+);
+
+const response = await ai.generate({
+  model: ollama.model('llama3.2'),
+  prompt: 'What is 1234 × 5678?',
+  tools: [calculator],
+});
+```
+
+## Remote Ollama server
+
+Point the plugin at any reachable Ollama server (e.g. a GPU workstation on your LAN or a private VM):
+
+```ts
+const ai = genkit({
+  plugins: [
+    ollama({
+      serverAddress: 'http://192.168.1.100:11434',
+      // Attach an auth header if the server is behind a proxy
+      requestHeaders: async ({ serverAddress }) => ({
+        Authorization: `Bearer ${await getToken(serverAddress)}`,
+      }),
+    }),
+  ],
+});
+```
+
+## Multimodal input
+
+Models like `llava` and `bakllava` accept images alongside text. Send them as data URIs or base64 strings:
+
+```ts
+const response = await ai.generate({
+  model: ollama.model('llava'),
+  messages: [
+    {
+      role: 'user',
+      content: [
+        { text: 'Describe what you see in this image.' },
+        { media: { url: 'data:image/jpeg;base64,...', contentType: 'image/jpeg' } },
+      ],
+    },
+  ],
+});
+```
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Google AI plugin" href="/plugins/google-genai">
+    Hosted Gemini models with more capabilities.
+  </Card>
+  <Card title="Sessions" href="/concepts/sessions">
+    Maintain conversation history across multiple turns.
+  </Card>
+  <Card title="RAG guide" href="/concepts/rag">
+    Build retrieval pipelines with local embeddings.
+  </Card>
+  <Card title="Tools" href="/concepts/tools">
+    Let models call functions during generation.
+  </Card>
+</CardGroup>

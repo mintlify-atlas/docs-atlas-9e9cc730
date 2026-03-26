@@ -1,0 +1,328 @@
+---
+title: "Vertex AI plugin"
+description: "Access Gemini, Imagen, and text embeddings on Google Cloud Vertex AI with Application Default Credentials or an Express Mode API key."
+---
+
+The Vertex AI plugin lets you run Genkit on Google Cloud infrastructure. It offers the same Gemini models as the Google AI plugin plus additional enterprise features:
+
+- IAM-based access control and audit logging
+- VPC Service Controls and data residency options
+- Imagen image generation models
+- Vertex AI Vector Search for production-scale RAG
+- Model Garden (third-party models like Claude, Llama, and more)
+
+In **TypeScript**, Vertex AI is now exported from the same `@genkit-ai/google-genai` package as `googleAI`. The legacy `@genkit-ai/vertexai` package still exists but is deprecated.
+
+In **Go** and **Python**, both `GoogleAI` and `VertexAI` live in the same package.
+
+## Installation
+
+<Tabs>
+  <Tab title="TypeScript">
+    <CodeGroup>
+      ```bash npm
+      npm install @genkit-ai/google-genai
+      ```
+      ```bash pnpm
+      pnpm add @genkit-ai/google-genai
+      ```
+    </CodeGroup>
+
+    <Warning>
+      The older `@genkit-ai/vertexai` package is deprecated. Migrate to `@genkit-ai/google-genai` to avoid breaking changes in future releases.
+    </Warning>
+  </Tab>
+  <Tab title="Go">
+    ```bash
+    go get github.com/firebase/genkit/go/plugins/googlegenai
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```bash
+    pip install genkit-google-genai-plugin
+    ```
+  </Tab>
+</Tabs>
+
+## Authentication
+
+Vertex AI uses **Google Cloud credentials**, not API keys.
+
+<Steps>
+  <Step title="Install the Google Cloud CLI">
+    Follow the [official install guide](https://cloud.google.com/sdk/docs/install) for your platform.
+  </Step>
+  <Step title="Authenticate locally">
+    ```bash
+    gcloud auth application-default login
+    ```
+    This writes Application Default Credentials (ADC) to your local machine. On GCP (Cloud Run, GKE, Cloud Functions) credentials are provided automatically by the metadata server.
+  </Step>
+  <Step title="Set your project and region">
+    ```bash
+    export GOOGLE_CLOUD_PROJECT=my-project-id
+    export GOOGLE_CLOUD_LOCATION=us-central1
+    ```
+  </Step>
+  <Step title="Enable the Vertex AI API">
+    ```bash
+    gcloud services enable aiplatform.googleapis.com
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+**Vertex AI Express Mode** lets you use an API key instead of full GCP credentials — great for quick experiments. Get a key from [Vertex AI Studio](https://console.cloud.google.com/vertex-ai) and pass it as `apiKey`. You don't need to set `projectId` or `location` in Express Mode.
+</Tip>
+
+## Configuration
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    import { genkit } from 'genkit';
+    import { vertexAI } from '@genkit-ai/google-genai';
+
+    const ai = genkit({
+      plugins: [
+        // Standard ADC authentication
+        vertexAI({ location: 'us-central1' }),
+
+        // Global endpoint (for Gemini 2.5+)
+        // vertexAI({ location: 'global' }),
+
+        // Vertex AI Express Mode
+        // vertexAI({ apiKey: process.env.VERTEX_EXPRESS_API_KEY }),
+      ],
+    });
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import (
+      "github.com/firebase/genkit/go/genkit"
+      "github.com/firebase/genkit/go/plugins/googlegenai"
+    )
+
+    g := genkit.Init(ctx,
+      genkit.WithPlugins(&googlegenai.VertexAI{
+        ProjectID: "my-project-id", // or set GOOGLE_CLOUD_PROJECT
+        Location:  "us-central1",   // or set GOOGLE_CLOUD_LOCATION
+      }),
+    )
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from genkit import Genkit
+    from genkit.plugins.google_genai import VertexAI
+
+    ai = Genkit(
+        plugins=[
+            VertexAI(
+                project='my-project-id',   # or set GOOGLE_CLOUD_PROJECT
+                location='us-central1',    # defaults to us-central1
+            )
+        ]
+    )
+    ```
+  </Tab>
+</Tabs>
+
+### Plugin options (TypeScript)
+
+```ts
+interface VertexAIPluginOptions {
+  /** Google Cloud project ID. Defaults to GOOGLE_CLOUD_PROJECT env var. */
+  projectId?: string;
+  /** GCP region, e.g. 'us-central1' or 'global'. */
+  location: string;
+  /** Custom Google Auth options (scopes, credentials, etc.). */
+  googleAuth?: GoogleAuthOptions;
+  /** Additional Gemini/Vertex model refs to pre-register. */
+  models?: (ModelReference<GeminiConfigSchema> | string)[];
+  /** Enable detailed API request/response debug traces. */
+  experimental_debugTraces?: boolean;
+}
+```
+
+## Generating text
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    const response = await ai.generate({
+      model: vertexAI.model('gemini-2.5-pro'),
+      prompt: 'Summarise the Vertex AI documentation in three bullet points.',
+    });
+    console.log(response.text);
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    resp, err := genkit.Generate(ctx, g,
+      ai.WithModelName("vertexai/gemini-2.5-pro"),
+      ai.WithPrompt("Summarise the Vertex AI documentation."),
+    )
+    fmt.Println(resp.Text())
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    response = await ai.generate(
+        model='vertexai/gemini-2.5-pro',
+        prompt='Summarise the Vertex AI documentation.',
+    )
+    print(response.text)
+    ```
+  </Tab>
+</Tabs>
+
+## Available models
+
+| Model name | Best for |
+|------------|----------|
+| `gemini-2.5-pro` | Highest capability, complex reasoning |
+| `gemini-2.5-flash` | Fast, cost-effective |
+| `gemini-2.5-flash-lite` | Ultra-low latency |
+| `gemini-2.0-flash` | Previous-generation, widely available |
+| `imagen-4.0-generate-001` | Photorealistic images |
+| `imagen-4.0-fast-generate-001` | Faster image generation |
+| `imagen-4.0-ultra-generate-001` | Highest quality image generation |
+| `lyria-002` | Music generation (Vertex AI only) |
+
+Go and Python plugins use dynamic model discovery — any model supported by the underlying `google.golang.org/genai` or `google-genai` SDK is automatically available.
+
+## Text embeddings
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    const embeddings = await ai.embed({
+      embedder: vertexAI.embedder('text-embedding-005'),
+      content: 'This is a document about retrieval-augmented generation.',
+    });
+    ```
+
+    Available embedders: `text-embedding-004`, `text-embedding-005`, `text-multilingual-embedding-002`, `gemini-embedding-001`, `multimodalembedding@001`.
+  </Tab>
+  <Tab title="Go">
+    ```go
+    res, err := genkit.Embed(ctx, g,
+      ai.WithEmbedderName("vertexai/text-embedding-005"),
+      ai.WithTextDocs("This is a document about RAG."),
+    )
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    result = await ai.embed(
+        embedder='vertexai/text-embedding-005',
+        content='This is a document about RAG.',
+    )
+    ```
+  </Tab>
+</Tabs>
+
+## Image generation (Imagen)
+
+```ts
+const response = await ai.generate({
+  model: vertexAI.model('imagen-4.0-generate-001', {
+    numberOfImages: 1,
+    aspectRatio: '16:9',
+    personGeneration: 'dont_allow',
+  }),
+  prompt: 'An aerial view of the Swiss Alps at golden hour.',
+});
+
+const image = response.media();
+```
+
+## Music generation (Lyria)
+
+Lyria is a Vertex AI–only model for instrumental music generation:
+
+```ts
+const response = await ai.generate({
+  model: vertexAI.model('lyria-002'),
+  prompt: 'An upbeat acoustic guitar piece for a travel vlog.',
+});
+
+const audio = response.media();
+```
+
+## Vertex AI Vector Search for RAG
+
+Vertex AI Vector Search provides managed, enterprise-scale nearest-neighbour search. The Go and Python plugins include a Vector Search retriever.
+
+<Tabs>
+  <Tab title="Go">
+    ```go
+    import "github.com/firebase/genkit/go/plugins/vertexai/vectorsearch"
+
+    // Define a retriever backed by a Vertex AI index endpoint
+    retriever := vectorsearch.DefineRetriever(g, vectorsearch.Config{
+      IndexEndpointID: "projects/my-project/locations/us-central1/indexEndpoints/123",
+      IndexID:         "projects/my-project/locations/us-central1/indexes/456",
+      Embedder:        genkit.LookupEmbedder(g, "vertexai/text-embedding-005"),
+    })
+
+    docs, err := genkit.Retrieve(ctx, g, retriever,
+      ai.WithQuery(ai.DocumentFromText("What is RAG?", nil)),
+      ai.WithOptions(&vectorsearch.RetrieveOptions{Limit: 5}),
+    )
+    ```
+  </Tab>
+</Tabs>
+
+## Advanced model configuration
+
+Use Google Search grounding, code execution, and thinking budget:
+
+```ts
+import { vertexAI } from '@genkit-ai/google-genai';
+
+const response = await ai.generate({
+  model: vertexAI.model('gemini-2.5-flash', {
+    // Enable Google Search grounding
+    googleSearch: true,
+    // Enable code execution
+    codeExecution: true,
+    // Thinking budget (0 = disabled, -1 = automatic)
+    thinkingConfig: { thinkingBudget: 1024 },
+  }),
+  prompt: 'Calculate the 100th prime number and verify it.',
+});
+```
+
+## Deploying to Cloud Run
+
+When deployed to Cloud Run, Cloud Functions, or any GCP service, credentials are automatically inferred from the runtime service account. No additional configuration is needed.
+
+```dockerfile
+# No credential setup needed — GCP provides credentials automatically
+FROM node:20-slim
+COPY . .
+RUN npm ci
+CMD ["node", "dist/index.js"]
+```
+
+See [Cloud Run deployment](/deployment/cloud-run) for a full walkthrough.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Google AI plugin" href="/plugins/google-genai">
+    Same models via the Gemini Developer API — no GCP project needed.
+  </Card>
+  <Card title="Firebase plugin" href="/plugins/firebase">
+    Firestore vector search and Firebase telemetry.
+  </Card>
+  <Card title="RAG guide" href="/concepts/rag">
+    Build retrieval-augmented generation pipelines.
+  </Card>
+  <Card title="Cloud Run deployment" href="/deployment/cloud-run">
+    Deploy Genkit flows to Cloud Run.
+  </Card>
+</CardGroup>

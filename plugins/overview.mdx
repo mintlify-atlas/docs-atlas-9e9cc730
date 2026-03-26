@@ -1,0 +1,148 @@
+---
+title: "Plugins overview"
+description: "Extend Genkit with official and community plugins for model providers, vector stores, telemetry, and more."
+---
+
+Genkit's plugin system lets you swap in any model provider, vector store, or telemetry backend without changing your application code. A plugin registers one or more **actions** — models, embedders, retrievers, indexers, evaluators — into the Genkit registry. Your flows call those actions by name and never depend on a specific provider's SDK directly.
+
+## How plugins extend Genkit
+
+Every plugin follows the same lifecycle:
+
+1. **Register** — pass the plugin to `genkit({ plugins: [...] })` (JS/TS), `genkit.Init(ctx, genkit.WithPlugins(...))` (Go), or `Genkit(plugins=[...])` (Python).
+2. **Lazy init** — the registry calls `init()` / `Init()` on first use, not at startup, so cold-start cost is minimised.
+3. **Resolve** — when your code references `googleai/gemini-2.5-flash`, the registry asks the `googleai` plugin to materialise that action on demand.
+4. **List** — the Dev UI calls `list()` / `list_actions()` to enumerate every available model or embedder for the action explorer.
+
+<Note>
+You can configure multiple plugins in the same Genkit instance — for example `googleAI()` for prototyping and `vertexAI()` for production — and choose between them at call time by qualifying the model name with its provider prefix.
+</Note>
+
+## Official plugins
+
+### JavaScript / TypeScript
+
+| Plugin | Package | Category | Notes |
+|--------|---------|----------|---------|
+| [Google AI (Gemini)](/plugins/google-genai) | `@genkit-ai/google-genai` | Model provider | Gemini, Imagen, Veo, TTS via AI Studio API |
+| [Vertex AI](/plugins/vertex-ai) | `@genkit-ai/google-genai` | Model provider | Gemini + Imagen on GCP (same package, different export) |
+| [Ollama](/plugins/ollama) | `@genkit-ai/ollama` | Model provider | Local models via Ollama server |
+| [Firebase](/plugins/firebase) | `@genkit-ai/firebase` | Vector store / telemetry | Firestore vector search, Firebase telemetry |
+| Anthropic | `genkitx-anthropic` | Model provider | Claude 3.5 / 4 (community) |
+| OpenAI-compatible | `genkitx-openai` | Model provider | OpenAI, OpenRouter, together.ai (community) |
+| Pinecone | `genkitx-pinecone` | Vector store | Pinecone vector database (community) |
+| Chroma | `genkitx-chromadb` | Vector store | ChromaDB (community) |
+| LangChain | `genkitx-langchain` | Integration | Use LangChain tools inside Genkit (community) |
+| Google Cloud | `@genkit-ai/google-cloud` | Telemetry | Cloud Trace + Cloud Logging |
+
+### Go
+
+| Plugin | Import path | Category |
+|--------|-------------|----------|
+| [Google AI / Vertex AI](/plugins/google-genai) | `github.com/firebase/genkit/go/plugins/googlegenai` | Model provider |
+| [Ollama](/plugins/ollama) | `github.com/firebase/genkit/go/plugins/ollama` | Model provider |
+| [Firebase](/plugins/firebase) | `github.com/firebase/genkit/go/plugins/firebase` | Vector store / telemetry |
+| Google Cloud | `github.com/firebase/genkit/go/plugins/googlecloud` | Telemetry |
+
+### Python
+
+| Plugin | Package | Category |
+|--------|---------|----------|
+| [Google AI (Gemini)](/plugins/google-genai) | `genkit-google-genai-plugin` | Model provider |
+| [Vertex AI](/plugins/vertex-ai) | `genkit-google-genai-plugin` | Model provider |
+| [Ollama](/plugins/ollama) | `genkit-ollama-plugin` | Model provider |
+| Anthropic | `genkit-anthropic-plugin` | Model provider |
+| OpenAI-compatible | `genkit-compat-oai-plugin` | Model provider |
+| DeepSeek | `genkit-deepseek-plugin` | Model provider |
+| xAI (Grok) | `genkit-xai-plugin` | Model provider |
+| Mistral | `genkit-mistral-plugin` | Model provider |
+| Hugging Face | `genkit-huggingface-plugin` | Model provider |
+| [Firebase](/plugins/firebase) | `genkit-firebase-plugin` | Vector store / telemetry |
+| Google Cloud | `genkit-google-cloud-plugin` | Telemetry |
+
+## Quick start
+
+<Tabs>
+  <Tab title="TypeScript">
+    ```ts
+    import { genkit } from 'genkit';
+    import { googleAI } from '@genkit-ai/google-genai';
+
+    const ai = genkit({
+      plugins: [googleAI()],
+    });
+
+    const { text } = await ai.generate({
+      model: googleAI.model('gemini-2.5-flash'),
+      prompt: 'Hello, Genkit!',
+    });
+    ```
+  </Tab>
+  <Tab title="Go">
+    ```go
+    import (
+      "github.com/firebase/genkit/go/genkit"
+      "github.com/firebase/genkit/go/plugins/googlegenai"
+    )
+
+    g := genkit.Init(ctx,
+      genkit.WithPlugins(&googlegenai.GoogleAI{}),
+    )
+
+    resp, _ := genkit.Generate(ctx, g,
+      ai.WithModelName("googleai/gemini-2.5-flash"),
+      ai.WithPrompt("Hello, Genkit!"),
+    )
+    ```
+  </Tab>
+  <Tab title="Python">
+    ```python
+    from genkit import Genkit
+    from genkit.plugins.google_genai import GoogleAI
+
+    ai = Genkit(plugins=[GoogleAI()])
+
+    response = await ai.generate(
+        model='googleai/gemini-2.5-flash',
+        prompt='Hello, Genkit!',
+    )
+    ```
+  </Tab>
+</Tabs>
+
+## The plugin interface
+
+At its core, a plugin implements three methods:
+
+| Method | Purpose |
+|--------|---------|
+| `init()` | One-time setup — create API clients, register known actions. Called lazily on first use. |
+| `resolve(actionType, name)` | Materialise a single action by kind and name (e.g. a model not registered at init time). |
+| `list()` | Return metadata for all available actions so the Dev UI can enumerate them. |
+
+In TypeScript the modern interface is `GenkitPluginV2` (from `genkit/plugin`). In Go plugins implement the `api.Plugin` interface. In Python plugins extend the abstract `Plugin` base class from `genkit._core.plugin`.
+
+See [Writing plugins](/plugins/writing-plugins) for a complete walkthrough.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Google AI plugin" href="/plugins/google-genai">
+    Gemini, Imagen, Veo, and embeddings via the Gemini Developer API.
+  </Card>
+  <Card title="Vertex AI plugin" href="/plugins/vertex-ai">
+    Enterprise access to Google models on Google Cloud.
+  </Card>
+  <Card title="Ollama plugin" href="/plugins/ollama">
+    Run Llama, Mistral, Gemma, and other models fully locally.
+  </Card>
+  <Card title="Firebase plugin" href="/plugins/firebase">
+    Firestore vector search and Firebase telemetry.
+  </Card>
+  <Card title="Writing plugins" href="/plugins/writing-plugins">
+    Build your own plugin and publish it to npm.
+  </Card>
+  <Card title="RAG guide" href="/concepts/rag">
+    Use retrievers and embedders together for retrieval-augmented generation.
+  </Card>
+</CardGroup>
